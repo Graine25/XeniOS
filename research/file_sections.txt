@@ -1,0 +1,624 @@
+PR Diff — File Organization by Emulator Section
+677 commits | 533 files changed
+Range: 621430444bf7ab3af9e7ed5bf0c044d16277a917 → HEAD
+================================================
+
+
+iOS UI
+------
+src/xenia/ui/window_ios.h *
+src/xenia/ui/window_ios.mm *
+src/xenia/ui/surface_ios.h *
+src/xenia/ui/surface_ios.mm *
+src/xenia/ui/windowed_app_context_ios.h *
+src/xenia/ui/windowed_app_context_ios.mm *
+src/xenia/ui/windowed_app_main_ios.mm *
+src/xenia/ui/file_picker_ios.mm *
+src/xenia/app/xenia_main_ios.mm *
+src/xenia/app/Info_ios.plist *
+xenia_ios.entitlements *
+
+
+Mac UI
+------
+src/xenia/ui/surface_mac.h *
+src/xenia/ui/surface_mac.mm *
+src/xenia/ui/apple_theme_tokens.cc *
+src/xenia/ui/apple_theme_tokens.h *
+src/xenia/ui/apple_ui_flags.cc *
+src/xenia/ui/apple_ui_flags.h *
+src/xenia/ui/apple_ui_navigation.h *
+src/xenia/ui/apple_ui_navigation_mac.cc *
+src/xenia/base/autorelease_pool_mac.cc *
+src/xenia/base/autorelease_pool_mac.h *
+src/xenia/base/console_app_main_mac.cc *
+src/xenia/base/main_init_mac.cc *
+src/xenia/base/system_mac.cc *
+src/xenia/base/debugging_mac.cc
+src/xenia/base/exception_handler_mac.cc *
+src/xenia/base/threading_mac.cc
+
+
+Qt / Desktop UI (Windows + Mac)
+--------------------------------
+src/xenia/ui/window_qt.cc
+src/xenia/ui/windowed_app_context_qt.cc
+src/xenia/ui/windowed_app_context_qt.h
+src/xenia/ui/windowed_app_main_qt.cc
+src/xenia/ui/config_dialog_qt.cc
+src/xenia/ui/game_config_dialog_qt.cc
+src/xenia/ui/game_list_dialog_qt.cc
+src/xenia/ui/game_list_dialog_qt.h
+src/xenia/ui/content_install_dialog_qt.cc
+src/xenia/ui/content_install_dialog_qt.h
+src/xenia/ui/context_menu_widget_qt.cc
+src/xenia/ui/simple_config_dialog_qt.cc
+src/xenia/ui/config_helpers.h
+src/xenia/ui/ui_resources.qrc
+src/xenia/ui/ui_resources_qrc.cpp
+src/xenia/app/emulator_window.cc
+src/xenia/app/emulator_window.h
+
+
+Metal — GPU Backend
+--------------------
+src/xenia/gpu/metal/metal_command_processor.cc *
+src/xenia/gpu/metal/metal_command_processor.h *
+src/xenia/gpu/metal/metal_pipeline_cache.cc *
+src/xenia/gpu/metal/metal_pipeline_cache.h *
+src/xenia/gpu/metal/metal_render_target_cache.cc *
+src/xenia/gpu/metal/metal_render_target_cache.h *
+src/xenia/gpu/metal/metal_texture_cache.cc *
+src/xenia/gpu/metal/metal_texture_cache.h *
+src/xenia/gpu/metal/metal_shared_memory.cc *
+src/xenia/gpu/metal/metal_shared_memory.h *
+src/xenia/gpu/metal/metal_shader.cc *
+src/xenia/gpu/metal/metal_shader.h *
+src/xenia/gpu/metal/metal_shader_cache.cc *
+src/xenia/gpu/metal/metal_shader_cache.h *
+src/xenia/gpu/metal/metal_shader_converter.cc *
+src/xenia/gpu/metal/metal_shader_converter.h *
+src/xenia/gpu/metal/metal_geometry_shader.cc *
+src/xenia/gpu/metal/metal_geometry_shader.h *
+src/xenia/gpu/metal/metal_primitive_processor.cc *
+src/xenia/gpu/metal/metal_primitive_processor.h *
+src/xenia/gpu/metal/metal_heap_pool.cc *
+src/xenia/gpu/metal/metal_heap_pool.h *
+src/xenia/gpu/metal/metal_upload_buffer_pool.cc *
+src/xenia/gpu/metal/metal_upload_buffer_pool.h *
+src/xenia/gpu/metal/metal_graphics_system.cc *
+src/xenia/gpu/metal/metal_graphics_system.h *
+src/xenia/gpu/metal/ir_runtime_impl.mm *
+src/xenia/gpu/metal/dxbc_to_dxil_converter.cc *
+src/xenia/gpu/metal/dxbc_to_dxil_converter.h *
+src/xenia/gpu/metal/metal_trace_dump_main.cc *
+src/xenia/gpu/metal/metal_trace_viewer_main.cc *
+src/xenia/gpu/metal/premake5.lua *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/adaptive_quad_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/adaptive_triangle_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/continuous_quad_1cp_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/continuous_quad_4cp_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/continuous_triangle_1cp_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/continuous_triangle_3cp_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/discrete_quad_1cp_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/discrete_quad_4cp_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/discrete_triangle_1cp_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/discrete_triangle_3cp_hs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/tessellation_adaptive_vs.h *
+src/xenia/gpu/metal/d3d12_5_1_bytecode/tessellation_indexed_vs.h *
+
+
+Metal — UI Layer
+-----------------
+src/xenia/ui/metal/metal_api.cc *
+src/xenia/ui/metal/metal_api.h *
+src/xenia/ui/metal/metal_presenter.h *
+src/xenia/ui/metal/metal_presenter.mm *
+src/xenia/ui/metal/metal_immediate_drawer.h *
+src/xenia/ui/metal/metal_immediate_drawer.mm *
+src/xenia/ui/metal/metal_provider.cc *
+src/xenia/ui/metal/metal_provider.h *
+src/xenia/ui/metal/metal_util.cc *
+src/xenia/ui/metal/metal_util.h *
+src/xenia/ui/metal/metal_gpu_completion_timeline.cc *
+src/xenia/ui/metal/metal_gpu_completion_timeline.h *
+src/xenia/ui/metal/metal_ir_runtime.cc *
+src/xenia/ui/metal/metal_window_demo.cc *
+src/xenia/ui/metal/Info.plist *
+src/xenia/ui/metal/premake5.lua *
+
+
+D3D12 — GPU Backend
+---------------------
+src/xenia/gpu/d3d12/d3d12_command_processor.cc
+src/xenia/gpu/d3d12/d3d12_command_processor.h
+src/xenia/gpu/d3d12/d3d12_render_target_cache.cc
+src/xenia/gpu/d3d12/d3d12_render_target_cache.h
+src/xenia/gpu/d3d12/d3d12_texture_cache.cc
+src/xenia/gpu/d3d12/d3d12_texture_cache.h
+src/xenia/gpu/d3d12/d3d12_shared_memory.cc
+src/xenia/gpu/d3d12/d3d12_shared_memory.h
+src/xenia/gpu/d3d12/deferred_command_list.cc
+src/xenia/gpu/d3d12/deferred_command_list.h
+src/xenia/gpu/d3d12/pipeline_cache.cc
+src/xenia/gpu/d3d12/premake5.lua
+src/xenia/gpu/dxbc_shader_translator_fetch.cc
+src/xenia/gpu/dxbc_shader_translator_memexport.cc
+src/xenia/ui/d3d12/d3d12_provider.cc
+src/xenia/ui/d3d12/premake5.lua
+
+
+Vulkan — GPU Backend
+---------------------
+src/xenia/gpu/vulkan/vulkan_command_processor.cc
+src/xenia/gpu/vulkan/vulkan_shared_memory.cc
+src/xenia/gpu/vulkan/vulkan_texture_cache.cc
+src/xenia/gpu/vulkan/premake5.lua
+src/xenia/ui/vulkan/vulkan_device.cc
+src/xenia/ui/vulkan/vulkan_device.h
+src/xenia/ui/vulkan/premake5.lua
+src/xenia/gpu/spirv_shader_translator.cc
+src/xenia/gpu/spirv_shader_translator.h
+src/xenia/gpu/spirv_shader_translator_fetch.cc
+src/xenia/gpu/spirv_shader_translator_memexport.cc
+src/xenia/gpu/spirv_shader.h
+src/xenia/gpu/spirv_compatibility.h
+src/xenia/gpu/shaders/testing/util/spirv_cross_wrapper.cc
+src/xenia/gpu/shaders/testing/util/spirv_cross_wrapper.h
+
+
+GPU Shaders
+-----------
+src/xenia/gpu/shaders/edram.xesli
+src/xenia/gpu/shaders/pixel_formats.xesli
+src/xenia/gpu/shaders/resolve.xesli
+src/xenia/gpu/shaders/resolve_clear_32bpp.xesli
+src/xenia/gpu/shaders/resolve_clear_64bpp.xesli
+src/xenia/gpu/shaders/resolve_downscale.cs.metal *
+src/xenia/gpu/shaders/resolve_fast_32bpp_1x2xmsaa.xesli
+src/xenia/gpu/shaders/resolve_fast_32bpp_4xmsaa.xesli
+src/xenia/gpu/shaders/resolve_fast_64bpp_1x2xmsaa.xesli
+src/xenia/gpu/shaders/resolve_fast_64bpp_4xmsaa.xesli
+src/xenia/gpu/shaders/resolve_full_128bpp.xesli
+src/xenia/gpu/shaders/resolve_full_16bpp.xesli
+src/xenia/gpu/shaders/resolve_full_32bpp.xesli
+src/xenia/gpu/shaders/resolve_full_64bpp.xesli
+src/xenia/gpu/shaders/resolve_full_8bpp.xesli
+src/xenia/gpu/shaders/host_depth_store_1xmsaa.cs.xesl
+src/xenia/gpu/shaders/host_depth_store_2xmsaa.cs.xesl
+src/xenia/gpu/shaders/host_depth_store_4xmsaa.cs.xesl
+src/xenia/gpu/shaders/texture_load.xesli
+src/xenia/gpu/shaders/texture_load_128bpb.xesli
+src/xenia/gpu/shaders/texture_load_16bpb.xesli
+src/xenia/gpu/shaders/texture_load_32bpb.xesli
+src/xenia/gpu/shaders/texture_load_32bpb_64bpb.xesli
+src/xenia/gpu/shaders/texture_load_64bpb.xesli
+src/xenia/gpu/shaders/texture_load_8bpb.xesli
+src/xenia/gpu/shaders/texture_load_ctx1.cs.xesl
+src/xenia/gpu/shaders/texture_load_dxn_rg8.cs.xesl
+src/xenia/gpu/shaders/texture_load_dxt1_rgba8.cs.xesl
+src/xenia/gpu/shaders/texture_load_dxt3_rgba8.cs.xesl
+src/xenia/gpu/shaders/texture_load_dxt3a.cs.xesl
+src/xenia/gpu/shaders/texture_load_dxt3aas1111.xesli
+src/xenia/gpu/shaders/texture_load_dxt5_rgba8.cs.xesl
+src/xenia/gpu/shaders/texture_load_dxt5a_r8.cs.xesl
+src/xenia/gpu/shaders/testing/bytecode/apply_gamma_pwl_test.cc
+src/xenia/gpu/shaders/testing/util/compute_test_harness.cc
+src/xenia/gpu/shaders/testing/util/compute_test_harness.h
+src/xenia/gpu/shaders/testing/util/vulkan_test_device.cc
+src/xenia/gpu/shaders/testing/util/vulkan_test_device.h
+src/xenia/gpu/shaders/testing/premake5.lua
+src/xenia/ui/shaders/xesl.xesli
+
+
+GPU Core (Shared)
+------------------
+src/xenia/gpu/command_processor.cc
+src/xenia/gpu/command_processor.h
+src/xenia/gpu/draw_util.cc
+src/xenia/gpu/draw_util.h
+src/xenia/gpu/gpu_flags.cc
+src/xenia/gpu/gpu_flags.h
+src/xenia/gpu/graphics_system.cc
+src/xenia/gpu/graphics_system.h
+src/xenia/gpu/primitive_processor.cc
+src/xenia/gpu/primitive_processor.h
+src/xenia/gpu/shared_memory.cc
+src/xenia/gpu/texture_cache.cc
+src/xenia/gpu/texture_cache.h
+src/xenia/gpu/texture_util.cc
+src/xenia/gpu/trace_dump.cc
+src/xenia/gpu/trace_dump.h
+src/xenia/gpu/trace_player.cc
+src/xenia/gpu/pm4_command_processor_declare.h
+src/xenia/gpu/pm4_command_processor_implement.h
+src/xenia/gpu/null/null_graphics_system.cc
+src/xenia/gpu/null/premake5.lua
+src/xenia/gpu/premake5.lua
+
+
+CPU — ARM64 Backend (a64)
+--------------------------
+src/xenia/cpu/backend/a64/a64_assembler.cc *
+src/xenia/cpu/backend/a64/a64_assembler.h *
+src/xenia/cpu/backend/a64/a64_backend.cc *
+src/xenia/cpu/backend/a64/a64_backend.h *
+src/xenia/cpu/backend/a64/a64_code_cache.cc *
+src/xenia/cpu/backend/a64/a64_code_cache.h *
+src/xenia/cpu/backend/a64/a64_code_cache_posix.cc *
+src/xenia/cpu/backend/a64/a64_code_cache_win.cc *
+src/xenia/cpu/backend/a64/a64_emitter.cc *
+src/xenia/cpu/backend/a64/a64_emitter.h *
+src/xenia/cpu/backend/a64/a64_function.cc *
+src/xenia/cpu/backend/a64/a64_function.h *
+src/xenia/cpu/backend/a64/a64_op.h *
+src/xenia/cpu/backend/a64/a64_seq_control.cc *
+src/xenia/cpu/backend/a64/a64_seq_memory.cc *
+src/xenia/cpu/backend/a64/a64_seq_vector.cc *
+src/xenia/cpu/backend/a64/a64_sequences.cc *
+src/xenia/cpu/backend/a64/a64_sequences.h *
+src/xenia/cpu/backend/a64/a64_stack_layout.h *
+src/xenia/cpu/backend/a64/a64_tracers.cc *
+src/xenia/cpu/backend/a64/a64_tracers.h *
+src/xenia/cpu/backend/a64/a64_util.h *
+src/xenia/cpu/backend/a64/premake5.lua *
+src/xenia/cpu/backend/backend.cc
+src/xenia/cpu/backend/backend.h
+
+
+CPU — x64 Backend
+------------------
+src/xenia/cpu/backend/x64/x64_backend.cc
+src/xenia/cpu/backend/x64/x64_code_cache.cc
+src/xenia/cpu/backend/x64/x64_code_cache.h
+src/xenia/cpu/backend/x64/x64_emitter.cc
+src/xenia/cpu/backend/x64/x64_seq_memory.cc
+src/xenia/cpu/backend/x64/x64_seq_vector.cc
+src/xenia/cpu/backend/x64/x64_sequences.cc
+src/xenia/cpu/backend/x64/x64_sequences.h
+
+
+CPU — Core / PPC
+-----------------
+src/xenia/cpu/ppc/ppc_context.h
+src/xenia/cpu/ppc/ppc_emit_altivec.cc
+src/xenia/cpu/ppc/ppc_emit_memory.cc
+src/xenia/cpu/ppc/ppc_opcode_disasm_gen.cc
+src/xenia/cpu/ppc/ppc_opcode_info.h
+src/xenia/cpu/ppc/ppc_translator.cc
+src/xenia/cpu/processor.cc
+src/xenia/cpu/thread_state.cc
+src/xenia/cpu/xex_module.cc
+src/xenia/cpu/xex_module.h
+src/xenia/cpu/mmio_handler.cc
+src/xenia/cpu/breakpoint.cc
+src/xenia/cpu/lzx.cc
+src/xenia/cpu/export_resolver.h
+src/xenia/cpu/debug_listener.h
+src/xenia/cpu/hir/value.cc
+src/xenia/cpu/compiler/passes/constant_propagation_pass.cc
+src/xenia/cpu/premake5.lua
+
+
+CPU — Testing
+--------------
+src/xenia/cpu/ppc/testing/ppc_testing_main.cc
+src/xenia/cpu/ppc/testing/instr__gen_vupkhpx.s
+src/xenia/cpu/ppc/testing/instr__gen_vupklpx.s
+src/xenia/cpu/ppc/testing/premake5.lua
+src/xenia/cpu/testing/pack_test.cc
+src/xenia/cpu/testing/vector_sha_test.cc
+src/xenia/cpu/testing/vector_shl_test.cc
+src/xenia/cpu/testing/vector_shr_test.cc
+src/xenia/cpu/testing/util.h
+src/xenia/cpu/testing/premake5.lua
+
+
+APU / Audio
+-----------
+src/xenia/apu/xma_context.cc
+src/xenia/apu/xma_context.h
+src/xenia/apu/xma_context_new.cc
+src/xenia/apu/xma_context_new.h
+src/xenia/apu/xma_context_old.cc
+src/xenia/apu/xma_context_old.h
+src/xenia/apu/xma_context_master.cc
+src/xenia/apu/xma_context_master.h
+src/xenia/apu/xma_context_fake.cc
+src/xenia/apu/xma_context_fake.h
+src/xenia/apu/xma_decoder.cc
+src/xenia/apu/xma_decoder.h
+src/xenia/apu/audio_system.cc
+src/xenia/apu/audio_system.h
+src/xenia/apu/audio_media_player.cc
+src/xenia/apu/conversion.h
+src/xenia/apu/xaudio2/xaudio2_audio_driver.cc
+src/xenia/apu/sdl/sdl_audio_driver.cc
+src/xenia/apu/sdl/sdl_audio_system.cc
+src/xenia/apu/alsa/premake5.lua
+src/xenia/apu/premake5.lua
+third_party/FFmpeg
+third_party/ffmpeg-xenia/config.h *
+third_party/ffmpeg-xenia/config_components.h *
+third_party/ffmpeg-xenia/libavcodec/bsf_list.c *
+third_party/ffmpeg-xenia/libavcodec/codec_list.c *
+third_party/ffmpeg-xenia/libavcodec/parser_list.c *
+third_party/ffmpeg-xenia/libavcodec/premake5.lua *
+third_party/ffmpeg-xenia/libavformat/demuxer_list.c *
+third_party/ffmpeg-xenia/libavformat/muxer_list.c *
+third_party/ffmpeg-xenia/libavformat/premake5.lua *
+third_party/ffmpeg-xenia/libavformat/protocol_list.c *
+third_party/ffmpeg-xenia/libavutil/avconfig.h *
+third_party/ffmpeg-xenia/libavutil/ffversion.h *
+third_party/ffmpeg-xenia/libavutil/premake5.lua *
+third_party/ffmpeg-xenia/premake5.lua *
+
+
+Kernel
+------
+src/xenia/kernel/xboxkrnl/xboxkrnl_audio.cc
+src/xenia/kernel/xboxkrnl/xboxkrnl_crypt.cc
+src/xenia/kernel/xboxkrnl/xboxkrnl_debug.cc
+src/xenia/kernel/xboxkrnl/xboxkrnl_io_info.cc
+src/xenia/kernel/xboxkrnl/xboxkrnl_memory.cc
+src/xenia/kernel/xboxkrnl/xboxkrnl_rtl.cc
+src/xenia/kernel/xboxkrnl/xboxkrnl_strings.cc
+src/xenia/kernel/xboxkrnl/xboxkrnl_threading.cc
+src/xenia/kernel/xboxkrnl/xboxkrnl_video.cc
+src/xenia/kernel/xam/xam_net.cc
+src/xenia/kernel/xam/xam_ui.cc
+src/xenia/kernel/xam/xam_user.cc
+src/xenia/kernel/xam/xam_input.cc
+src/xenia/kernel/xam/xam_info.cc
+src/xenia/kernel/xam/xam_state.h
+src/xenia/kernel/xam/content_manager.cc
+src/xenia/kernel/xam/profile_manager.cc
+src/xenia/kernel/xam/profile_manager.h
+src/xenia/kernel/xam/user_settings.cc
+src/xenia/kernel/xam/user_settings.h
+src/xenia/kernel/xam/user_tracker.cc
+src/xenia/kernel/xam/user_tracker.h
+src/xenia/kernel/xam/achievement_manager.cc
+src/xenia/kernel/xam/apps/xlivebase_app.cc
+src/xenia/kernel/xbdm/xbdm_misc.cc
+src/xenia/kernel/xbdm/xbdm_module.cc
+src/xenia/kernel/kernel_state.cc
+src/xenia/kernel/kernel_state.h
+src/xenia/kernel/user_module.cc
+src/xenia/kernel/xfile.cc
+src/xenia/kernel/xfile.h
+src/xenia/kernel/xmutant.cc
+src/xenia/kernel/xmutant.h
+src/xenia/kernel/xsocket.cc
+src/xenia/kernel/xsocket.h
+src/xenia/kernel/xthread.cc
+src/xenia/kernel/xthread.h
+src/xenia/kernel/xtimer.cc
+src/xenia/kernel/xtimer.h
+src/xenia/kernel/util/object_table.cc
+src/xenia/kernel/util/object_table.h
+src/xenia/kernel/util/xex2_info.h
+src/xenia/kernel/info/volume.h
+src/xenia/kernel/premake5.lua
+
+
+VFS
+---
+src/xenia/vfs/devices/disc_image_device.cc
+src/xenia/vfs/devices/disc_image_device.h
+src/xenia/vfs/devices/disc_image_entry.cc
+src/xenia/vfs/devices/disc_image_entry.h
+src/xenia/vfs/devices/disc_image_file.cc
+src/xenia/vfs/devices/disc_zarchive_device.cc
+src/xenia/vfs/devices/host_path_device.cc
+src/xenia/vfs/devices/host_path_file.cc
+src/xenia/vfs/devices/xcontent_container_device.cc
+src/xenia/vfs/entry.cc
+src/xenia/vfs/iso_metadata.cc
+src/xenia/vfs/virtual_file_system.cc
+src/xenia/vfs/xex_metadata.cc
+src/xenia/vfs/xex_metadata_main.cc
+
+
+Base / Platform
+---------------
+src/xenia/base/memory.cc
+src/xenia/base/memory_posix.cc
+src/xenia/base/mapped_memory.h
+src/xenia/base/mapped_memory_posix.cc
+src/xenia/base/mapped_memory_win.cc
+src/xenia/base/threading_posix.cc
+src/xenia/base/clock.cc
+src/xenia/base/clock_posix.cc
+src/xenia/base/filesystem_posix.cc
+src/xenia/base/logging.cc
+src/xenia/base/mutex.cc
+src/xenia/base/mutex.h
+src/xenia/base/atomic.h
+src/xenia/base/math.h
+src/xenia/base/platform.h
+src/xenia/base/platform_win.h
+src/xenia/base/cvar.h
+src/xenia/base/socket.h
+src/xenia/base/socket_win.cc
+src/xenia/base/bit_stream.cc
+src/xenia/base/chrono.h
+src/xenia/base/main_init_ios.cc *
+src/xenia/base/main_init_mac.cc *
+src/xenia/base/main_init_posix.cc
+src/xenia/base/main_init_win.cc
+src/xenia/base/console_app_main_posix.cc
+src/xenia/base/testing/memory_test.cc
+src/xenia/base/testing/premake5.lua
+src/xenia/base/premake5.lua
+src/xenia/emulator.cc
+src/xenia/emulator.h
+src/xenia/memory.cc
+src/xenia/memory.h
+src/xenia/config.cc
+src/xenia/config.h
+src/xenia/storage_flags.cc *
+src/xenia/storage_flags.h *
+src/xenia/xbox.h
+
+
+Android
+-------
+android/android_studio_project/app/build.gradle
+android/android_studio_project/app/src/main/AndroidManifest.xml
+android/android_studio_project/app/src/main/java/jp/xenia/XeniaRuntimeException.java
+android/android_studio_project/app/src/main/java/jp/xenios/XeniosRuntimeException.java *
+android/android_studio_project/app/src/main/java/jp/xenios/emulator/GpuTraceViewerActivity.java
+android/android_studio_project/app/src/main/java/jp/xenios/emulator/LauncherActivity.java
+android/android_studio_project/app/src/main/java/jp/xenios/emulator/WindowDemoActivity.java
+android/android_studio_project/app/src/main/java/jp/xenios/emulator/WindowSurfaceView.java
+android/android_studio_project/app/src/main/java/jp/xenios/emulator/WindowedAppActivity.java
+android/android_studio_project/app/src/main/res/layout/activity_gpu_trace_viewer.xml
+android/android_studio_project/app/src/main/res/layout/activity_launcher.xml
+android/android_studio_project/app/src/main/res/layout/activity_window_demo.xml
+src/xenia/ui/windowed_app_context_android.cc
+
+
+iOS JIT Tools
+-------------
+tools/ios/xenios_ios_lldb_jit_broker.py *
+tools/ios/install_lldbinit_xenios_jit.sh *
+docs/ios_lldb_jit_broker.md *
+
+
+Build / CI
+----------
+.github/workflows/CI.yml
+.github/workflows/apple-publish.yml *
+.gitattributes
+.gitignore
+.gitmodules
+premake5.lua
+src/xenia/app/premake5.lua
+src/xenia/app/Info.plist *
+src/xenia/app/discord/premake5.lua
+src/xenia/app/discord/discord_presence.cc
+src/xenia/app/xenia_main.cc
+src/xenia/helper/sdl/sdl_helper.cc
+src/xenia/hid/sdl/sdl_input_driver.cc
+src/xenia/hid/skylander/premake5.lua
+src/xenia/debug/gdb/gdbstub.cc *
+src/xenia/debug/gdb/gdbstub.h *
+src/xenia/debug/gdb/premake5.lua *
+src/xenia/debug/ui/debug_window.cc
+src/xenia/debug/ui/debug_window.h
+tools/build/premake.py
+tools/build/scripts/apu_deps.lua
+tools/build/scripts/build_paths.lua
+tools/build/scripts/platform_files.lua
+tools/build/scripts/test_suite.lua
+tools/build_apple_release.sh *
+tools/ppc-table-gen.py
+tools/update_website_build_manifests.py *
+xenia-build.py
+xenia.entitlements *
+
+
+Third-Party Dependencies
+------------------------
+third_party/SPIRV-Cross *
+third_party/spirv-cross.lua *
+third_party/DirectXShaderCompiler
+third_party/dxilconv.lua *
+third_party/metal-cpp *
+third_party/metal-cpp.lua *
+third_party/metal-shader-converter *
+third_party/metal-shader-converter.lua *
+third_party/oaknut *
+third_party/asio *
+third_party/asio.lua *
+third_party/disruptorplus
+third_party/miniaudio
+third_party/SDL2-static-ios.lua *
+third_party/SDL2.lua
+third_party/SDL_config_xenia_ios.h *
+third_party/capstone.lua
+third_party/discord-rpc.lua
+third_party/libusb.lua
+third_party/zarchive.lua
+third_party/zlib-ng.lua
+third_party/mspack.lua
+third_party/binutils/build.sh
+third_party/crypto/sha256.cpp
+
+
+Assets / Branding
+-----------------
+assets/apple/AppIcon.icon/Assets/0_X1.svg *
+assets/apple/AppIcon.icon/Assets/0_X2.svg *
+assets/apple/AppIcon.icon/Assets/1_Top 2.svg *
+assets/apple/AppIcon.icon/Assets/2_Middle.svg *
+assets/apple/AppIcon.icon/Assets/3_Base.svg *
+assets/apple/AppIcon.icon/icon.json *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/Contents.json *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ios-marketing-1024.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ipad-app-76.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ipad-app-76@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ipad-notification-20.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ipad-notification-20@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ipad-pro-app-83.5@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ipad-settings-29.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ipad-settings-29@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ipad-spotlight-40.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/ipad-spotlight-40@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/iphone-app-60@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/iphone-app-60@3x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/iphone-notification-20@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/iphone-notification-20@3x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/iphone-settings-29@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/iphone-settings-29@3x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/iphone-spotlight-40@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/iphone-spotlight-40@3x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-128.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-128@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-16.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-16@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-256.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-256@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-32.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-32@2x.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-512.png *
+assets/apple/AppIcon.xcassets/AppIcon.appiconset/mac-512@2x.png *
+assets/apple/AppIcon.xcassets/Contents.json *
+assets/apple/AppIcon.xcassets/SettingsLinkDiscord.imageset/Contents.json *
+assets/apple/AppIcon.xcassets/SettingsLinkDiscord.imageset/discord.png *
+assets/apple/AppIcon.xcassets/SettingsLinkGitHub.imageset/Contents.json *
+assets/apple/AppIcon.xcassets/SettingsLinkGitHub.imageset/github.png *
+assets/apple/AppIcon.xcassets/SettingsLinkKoFi.imageset/Contents.json *
+assets/apple/AppIcon.xcassets/SettingsLinkKoFi.imageset/kofi.png *
+assets/apple/AppIcon.xcassets/SettingsLinkWebsite.imageset/Contents.json *
+assets/apple/AppIcon.xcassets/SettingsLinkWebsite.imageset/website-icon.png *
+assets/apple/xenios-readme-icon.png *
+assets/icon/1024.png
+assets/icon/128.png
+assets/icon/16.png
+assets/icon/256.png
+assets/icon/32.png
+assets/icon/48.png
+assets/icon/512.png
+assets/icon/64.png
+assets/icon/extra/114.png
+assets/icon/extra/120.png
+assets/icon/extra/144.png
+assets/icon/extra/150.png
+assets/icon/extra/152.png
+assets/icon/extra/180.png
+assets/icon/extra/192.png
+assets/icon/extra/310.png
+assets/icon/extra/36.png
+assets/icon/extra/57.png
+assets/icon/extra/60.png
+assets/icon/extra/70.png
+assets/icon/extra/72.png
+assets/icon/extra/76.png
+assets/icon/extra/96.png
+assets/icon/icon.ico
+assets/xenios.desktop
+README.md
+AGENTS.md *
+docs/building.md
