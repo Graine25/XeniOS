@@ -37,7 +37,7 @@ struct kPacketInfo {
   uint32_t current_frame_size_;
 
   const bool isLastFrameInPacket() const {
-    return current_frame_ == frame_count_ - 1;
+    return frame_count_ == 0 || current_frame_ == frame_count_ - 1;
   }
 };
 
@@ -55,12 +55,12 @@ class XmaContextNew : public XmaContext {
   bool Work();
 
   void Enable();
-  bool Block(bool poll);
   void Clear();
   void Disable();
   void Release();
 
  private:
+  void ClearLocked(XMA_CONTEXT_DATA* data);
   static void SwapInputBuffer(XMA_CONTEXT_DATA* data);
   // Convert sampling rate from ID to frequency.
   static int GetSampleRate(int id);
@@ -98,6 +98,12 @@ class XmaContextNew : public XmaContext {
   bool DecodePacket(AVCodecContext* av_context, const AVPacket* av_packet,
                     AVFrame* av_frame);
 
+  // Re-reads context from guest memory and merges only decoder-owned fields,
+  // preserving any game modifications made during decoding.
+  void StoreContextMerged(const XMA_CONTEXT_DATA& data,
+                          const XMA_CONTEXT_DATA& initial_data,
+                          uint8_t* context_ptr);
+
   std::array<uint8_t, kBytesPerPacketData * 2> input_buffer_;
   // first byte contains bit offset information
   std::array<uint8_t, 1 + 4096> xma_frame_;
@@ -105,6 +111,14 @@ class XmaContextNew : public XmaContext {
 
   int32_t remaining_subframe_blocks_in_output_buffer_ = 0;
   uint8_t current_frame_remaining_subframes_ = 0;
+
+  // Loop subframe precision state.
+  // Maximum subframe blocks to output from the current frame (loop end
+  // truncation).  0 means no limit.
+  uint8_t loop_frame_output_limit_ = 0;
+  // When true, the next decoded frame should skip leading subframes per
+  // loop_subframe_skip (loop start adjustment).
+  bool loop_start_skip_pending_ = false;
 };
 
 }  // namespace apu

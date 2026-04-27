@@ -136,6 +136,10 @@ class PrimitiveProcessor {
     // TODO(Triang3l): If important, split into the index count and the actual
     // index buffer size, using zeros for out-of-bounds indices.
     uint32_t host_draw_vertex_count;
+    // Guest-side draw index count before host primitive expansion / conversion.
+    // Needed by shader-side bounds checks when loading guest indices from
+    // shared memory (VS expansion, full 32-bit index loads).
+    uint32_t guest_draw_vertex_count;
     uint32_t line_loop_closing_index;
     ProcessedIndexBufferType index_buffer_type;
     uint32_t guest_index_base;
@@ -820,6 +824,7 @@ class PrimitiveProcessor {
   // the reset index).
   struct CachedResult {
     uint32_t host_draw_vertex_count;
+    uint32_t guest_draw_vertex_count;
     ProcessedIndexBufferType index_buffer_type;
     xenos::IndexFormat host_index_format;
     xenos::Endian host_shader_index_endian;

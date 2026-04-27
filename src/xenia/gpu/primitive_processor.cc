@@ -334,17 +334,18 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
       regs.Get<reg::VGT_HOS_CNTL>().tess_mode;
   Shader::HostVertexShaderType host_vertex_shader_type;
   if (tessellation_enabled) {
-    // Currently only supporting tessellation in known cases for safety, and not
-    // yet converting patch strips / fans to patch lists until games using them
-    // are found for easier debugging when it actually happens.
-    // TODO(Triang3l): Conversion of patch strips / fans if found.
+    // Currently only supporting tessellation in known cases for safety.
     host_vertex_shader_type = Shader::HostVertexShaderType(-1);
     switch (guest_primitive_type) {
       case xenos::PrimitiveType::kTriangleList:
+      case xenos::PrimitiveType::kTriangleFan:
+      case xenos::PrimitiveType::kTriangleStrip:
         // Also supported by triangle strips and fans according to:
         // https://www.khronos.org/registry/OpenGL/extensions/AMD/AMD_vertex_shader_tessellator.txt
-        // Would need to convert those to triangle lists, but haven't seen any
-        // games using tessellated strips / fans so far.
+        // Convert strips and fans to triangle lists for tessellation.
+        if (guest_primitive_type != xenos::PrimitiveType::kTriangleList) {
+          host_primitive_type = xenos::PrimitiveType::kTriangleList;
+        }
         switch (tessellation_mode) {
           case xenos::TessellationMode::kDiscrete:
             // - 415607E1 - nets above barrels in the beginning of the first
@@ -477,6 +478,7 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
   uint32_t guest_index_base = 0, guest_index_buffer_needed_bytes = 0;
   CachedResult cacheable;
   cacheable.host_draw_vertex_count = guest_draw_vertex_count;
+  cacheable.guest_draw_vertex_count = guest_draw_vertex_count;
   cacheable.host_primitive_reset_enabled = false;
   cacheable.host_index_buffer_handle = SIZE_MAX;
   if (host_vertex_shader_type ==
@@ -576,11 +578,29 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
                       xenos::PrimitiveType::kTriangleList);
           cacheable.host_draw_vertex_count =
               GetTriangleFanListIndexCount(cacheable.host_draw_vertex_count);
-          cacheable.index_buffer_type =
-              ProcessedIndexBufferType::kHostBuiltinForAuto;
-          assert_true(builtin_ib_offset_triangle_fans_to_lists_ != SIZE_MAX);
-          cacheable.host_index_buffer_handle =
-              builtin_ib_offset_triangle_fans_to_lists_;
+          if (builtin_ib_offset_triangle_fans_to_lists_ != SIZE_MAX) {
+            cacheable.index_buffer_type =
+                ProcessedIndexBufferType::kHostBuiltinForAuto;
+            cacheable.host_index_buffer_handle =
+                builtin_ib_offset_triangle_fans_to_lists_;
+          } else if (cacheable.host_draw_vertex_count) {
+            cacheable.index_buffer_type =
+                ProcessedIndexBufferType::kHostConverted;
+            auto host_indices = reinterpret_cast<uint16_t*>(
+                RequestHostConvertedIndexBufferForCurrentFrame(
+                    xenos::IndexFormat::kInt16,
+                    cacheable.host_draw_vertex_count, false, 0,
+                    cacheable.host_index_buffer_handle));
+            if (!host_indices) {
+              return false;
+            }
+            uint16_t* host_indices_write = host_indices;
+            for (uint32_t i = 2; i < guest_draw_vertex_count; ++i) {
+              *(host_indices_write++) = uint16_t(i - 1);
+              *(host_indices_write++) = uint16_t(i);
+              *(host_indices_write++) = 0;
+            }
+          }
           break;
         case xenos::PrimitiveType::kLineLoop:
           // Plus 1 element (if there's anything to draw) in the strip, still
@@ -610,11 +630,35 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
                       xenos::PrimitiveType::kTriangleList);
           cacheable.host_draw_vertex_count =
               GetTriangleStripListIndexCount(cacheable.host_draw_vertex_count);
-          cacheable.index_buffer_type =
-              ProcessedIndexBufferType::kHostBuiltinForAuto;
-          assert_true(builtin_ib_offset_triangle_strips_to_lists_ != SIZE_MAX);
-          cacheable.host_index_buffer_handle =
-              builtin_ib_offset_triangle_strips_to_lists_;
+          if (builtin_ib_offset_triangle_strips_to_lists_ != SIZE_MAX) {
+            cacheable.index_buffer_type =
+                ProcessedIndexBufferType::kHostBuiltinForAuto;
+            cacheable.host_index_buffer_handle =
+                builtin_ib_offset_triangle_strips_to_lists_;
+          } else if (cacheable.host_draw_vertex_count) {
+            cacheable.index_buffer_type =
+                ProcessedIndexBufferType::kHostConverted;
+            auto host_indices = reinterpret_cast<uint16_t*>(
+                RequestHostConvertedIndexBufferForCurrentFrame(
+                    xenos::IndexFormat::kInt16,
+                    cacheable.host_draw_vertex_count, false, 0,
+                    cacheable.host_index_buffer_handle));
+            if (!host_indices) {
+              return false;
+            }
+            uint16_t* host_indices_write = host_indices;
+            for (uint32_t i = 2; i < guest_draw_vertex_count; ++i) {
+              if ((i & 1) == 0) {
+                *(host_indices_write++) = uint16_t(i - 2);
+                *(host_indices_write++) = uint16_t(i - 1);
+                *(host_indices_write++) = uint16_t(i);
+              } else {
+                *(host_indices_write++) = uint16_t(i - 1);
+                *(host_indices_write++) = uint16_t(i - 2);
+                *(host_indices_write++) = uint16_t(i);
+              }
+            }
+          }
           break;
         default:
           assert_always();
@@ -1037,6 +1081,7 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
   result_out.host_vertex_shader_type = host_vertex_shader_type;
   result_out.tessellation_mode = tessellation_mode;
   result_out.host_draw_vertex_count = cacheable.host_draw_vertex_count;
+  result_out.guest_draw_vertex_count = cacheable.guest_draw_vertex_count;
   result_out.line_loop_closing_index = line_loop_closing_index;
   result_out.index_buffer_type = cacheable.index_buffer_type;
   result_out.guest_index_base = guest_index_base;

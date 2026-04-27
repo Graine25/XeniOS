@@ -67,6 +67,11 @@ class GameListDialogQt : public QWidget {
   void RefreshIcons();
   void UpdateProfileButtonState();
 
+ signals:
+  void fileOpenRequested();
+  void launchGameRequested(const std::filesystem::path& path);
+  void settingsRequested();
+
  private slots:
   void OnFilterTextChanged(const QString& text);
   void OnGameDoubleClicked(int row, int column);

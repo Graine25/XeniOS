@@ -3904,7 +3904,7 @@ bool VulkanCommandProcessor::IssueCopy() {
       HeapAllocationInfo alloc_info;
       if (physical_heap->QueryRegionInfo(written_address, &alloc_info) &&
           (alloc_info.state & kMemoryAllocationCommit) &&
-          (alloc_info.protect & kMemoryProtectWrite)) {
+          IsWritableProtect(alloc_info.protect)) {
         uint32_t end_address = written_address + written_length;
         uint32_t region_end = alloc_info.base_address + alloc_info.region_size;
         if (end_address <= region_end) {
@@ -4114,7 +4114,7 @@ bool VulkanCommandProcessor::IssueCopy() {
       HeapAllocationInfo alloc_info;
       if (physical_heap->QueryRegionInfo(written_address, &alloc_info) &&
           (alloc_info.state & kMemoryAllocationCommit) &&
-          (alloc_info.protect & kMemoryProtectWrite)) {
+          IsWritableProtect(alloc_info.protect)) {
         uint32_t end_address = written_address + written_length;
         uint32_t region_end = alloc_info.base_address + alloc_info.region_size;
         if (end_address <= region_end) {

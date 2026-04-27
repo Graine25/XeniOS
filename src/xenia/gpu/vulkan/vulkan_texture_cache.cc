@@ -714,14 +714,24 @@ VulkanTextureCache::SamplerParameters VulkanTextureCache::GetSamplerParameters(
       binding.aniso_filter == xenos::AnisoFilter::kUseFetchConst
           ? fetch.aniso_filter
           : binding.aniso_filter;
-  parameters.aniso_filter = std::min(aniso_filter, max_anisotropy_);
   parameters.mip_base_map = mip_filter == xenos::TextureFilter::kBaseMap;
 
-  uint32_t mip_min_level;
-  texture_util::GetSubresourcesFromFetchConstant(fetch, nullptr, nullptr,
-                                                 nullptr, nullptr, nullptr,
-                                                 &mip_min_level, nullptr);
+  uint32_t mip_min_level, mip_max_level;
+  texture_util::GetSubresourcesFromFetchConstant(
+      fetch, nullptr, nullptr, nullptr, nullptr, nullptr, &mip_min_level,
+      &mip_max_level);
   parameters.mip_min_level = mip_min_level;
+  bool has_mips = mip_max_level > mip_min_level;
+  // Apply anisotropic override, but only for mipmapped textures
+  // that are already using bilinear/trilinear filtering.
+  if (cvars::anisotropic_override > -1 && cvars::anisotropic_override < 6 &&
+      has_mips && !parameters.mip_base_map && parameters.mag_linear &&
+      parameters.min_linear &&
+      (mip_filter == xenos::TextureFilter::kPoint ||
+       mip_filter == xenos::TextureFilter::kLinear)) {
+    aniso_filter = xenos::AnisoFilter(cvars::anisotropic_override);
+  }
+  parameters.aniso_filter = std::min(aniso_filter, max_anisotropy_);
 
   return parameters;
 }
@@ -1325,11 +1335,10 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
     write_descriptor_set_dest.pTexelBufferView = nullptr;
   }
   // TODO(Triang3l): Use a single 512 MB shared memory binding if possible.
-  // Aligning because if the data for a vector in a storage buffer is provided
-  // partially, the value read may still be (0, 0, 0, 0), and small (especially
-  // linear) textures won't be loaded correctly.
-  uint32_t source_length_alignment = UINT32_C(1)
-                                     << load_shader_info.source_bpe_log2;
+  // ByteAddressBuffer-based load shaders keep the scaled-resolve binding
+  // aligned to 16 bytes even though LoadShaderInfo no longer exposes the guest
+  // source element size.
+  uint32_t source_length_alignment = 16;
   VkDescriptorSet descriptor_set_source_base = VK_NULL_HANDLE;
   VkDescriptorSet descriptor_set_source_mips = VK_NULL_HANDLE;
   VkDescriptorBufferInfo write_descriptor_set_source_base_buffer_info;
@@ -1430,8 +1439,10 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
         vulkan_shared_memory.buffer();
     write_descriptor_set_source_mips_buffer_info.offset = texture_key.mip_page
                                                           << 12;
+    // Align (primarily the last row of a linear packed mip tail) because
+    // shaders use up to 16-byte loads for multiple blocks at once.
     write_descriptor_set_source_mips_buffer_info.range =
-        xe::align(vulkan_texture.GetGuestMipsSize(), source_length_alignment);
+        xe::align(vulkan_texture.GetGuestMipsSize(), uint32_t(16));
     VkWriteDescriptorSet& write_descriptor_set_source_mips =
         write_descriptor_sets[write_descriptor_set_count++];
     write_descriptor_set_source_mips.sType =

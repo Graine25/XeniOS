@@ -26,6 +26,7 @@ extern std::string game_config_suffix;
 
 void SetupConfig(const std::filesystem::path& config_folder);
 toml::table LoadGameConfig(uint32_t title_id);
+std::filesystem::path GetBundledDataPath(const std::string& subdirectory);
 
 // Extract title_id from a game file and load its config overrides.
 // Returns the title_id if successful, 0 otherwise.

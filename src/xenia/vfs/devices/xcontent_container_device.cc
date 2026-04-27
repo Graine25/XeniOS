@@ -18,12 +18,28 @@ namespace vfs {
 std::unique_ptr<XContentContainerDevice>
 XContentContainerDevice::CreateContentDevice(
     const std::string_view mount_path, const std::filesystem::path& host_path) {
-  if (!std::filesystem::exists(host_path)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(host_path, ec)) {
+    if (ec) {
+      XELOGE("Failed to check XContent container path {}: {}", host_path,
+             ec.message());
+    }
     XELOGE("Path to XContent container does not exist: {}", host_path);
     return nullptr;
   }
 
-  if (std::filesystem::is_directory(host_path)) {
+  ec.clear();
+  if (std::filesystem::is_directory(host_path, ec)) {
+    if (ec) {
+      XELOGE("Failed to stat XContent container path {}: {}", host_path,
+             ec.message());
+      return nullptr;
+    }
+    return nullptr;
+  }
+  if (ec) {
+    XELOGE("Failed to stat XContent container path {}: {}", host_path,
+           ec.message());
     return nullptr;
   }
 
@@ -33,13 +49,22 @@ XContentContainerDevice::CreateContentDevice(
     return nullptr;
   }
 
-  const uint64_t package_size = std::filesystem::file_size(host_path);
+  ec.clear();
+  const uint64_t package_size = std::filesystem::file_size(host_path, ec);
+  if (ec) {
+    XELOGE("Failed to get XContent package size for {}: {}", host_path,
+           ec.message());
+    fclose(host_file);
+    return nullptr;
+  }
   if (package_size < sizeof(XContentContainerHeader)) {
+    fclose(host_file);
     return nullptr;
   }
 
   const auto header = XContentContainerDevice::ReadContainerHeader(host_file);
   if (header == nullptr) {
+    fclose(host_file);
     return nullptr;
   }
 
@@ -74,12 +99,28 @@ XContentContainerDevice::XContentContainerDevice(
 XContentContainerDevice::~XContentContainerDevice() {}
 
 bool XContentContainerDevice::Initialize() {
-  if (!std::filesystem::exists(host_path_)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(host_path_, ec)) {
+    if (ec) {
+      XELOGE("Failed to check XContent container path {}: {}", host_path_,
+             ec.message());
+    }
     XELOGE("Path to XContent container does not exist: {}", host_path_);
     return false;
   }
 
-  if (std::filesystem::is_directory(host_path_)) {
+  ec.clear();
+  if (std::filesystem::is_directory(host_path_, ec)) {
+    if (ec) {
+      XELOGE("Failed to stat XContent container path {}: {}", host_path_,
+             ec.message());
+      return false;
+    }
+    return false;
+  }
+  if (ec) {
+    XELOGE("Failed to stat XContent container path {}: {}", host_path_,
+           ec.message());
     return false;
   }
 
@@ -111,11 +152,23 @@ bool XContentContainerDevice::Initialize() {
 std::unique_ptr<XContentContainerHeader>
 XContentContainerDevice::ReadContainerHeader(
     const std::filesystem::path& file_path) {
-  if (!std::filesystem::exists(file_path)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(file_path, ec)) {
+    if (ec) {
+      XELOGW("Failed to check XContent header path {}: {}", file_path,
+             ec.message());
+    }
     return {};
   }
 
-  if (std::filesystem::file_size(file_path) < sizeof(XContentContainerHeader)) {
+  ec.clear();
+  const auto file_size = std::filesystem::file_size(file_path, ec);
+  if (ec) {
+    XELOGW("Failed to get XContent header size for {}: {}", file_path,
+           ec.message());
+    return {};
+  }
+  if (file_size < sizeof(XContentContainerHeader)) {
     return {};
   }
 
@@ -134,6 +187,9 @@ XContentContainerDevice::ReadContainerHeader(FILE* host_file) {
 
   // Read header & check signature
   if (fread(header.get(), sizeof(XContentContainerHeader), 1, host_file) != 1) {
+    return nullptr;
+  }
+  if (!header->content_header.is_magic_valid()) {
     return nullptr;
   }
   return header;
@@ -181,7 +237,13 @@ kernel::xam::XCONTENT_AGGREGATE_DATA XContentContainerDevice::content_header()
 
 XContentContainerDevice::Result XContentContainerDevice::ReadHeaderAndVerify(
     FILE* header_file) {
-  files_total_size_ = std::filesystem::file_size(host_path_);
+  std::error_code ec;
+  files_total_size_ = std::filesystem::file_size(host_path_, ec);
+  if (ec) {
+    XELOGE("Failed to get XContent container size for {}: {}", host_path_,
+           ec.message());
+    return Result::kReadError;
+  }
   if (files_total_size_ < sizeof(XContentContainerHeader)) {
     return Result::kTooSmall;
   }

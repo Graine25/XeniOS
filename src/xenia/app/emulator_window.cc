@@ -10,6 +10,7 @@
 #include "xenia/app/emulator_window.h"
 
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <thread>
 
@@ -43,6 +44,8 @@
 #include "xenia/ui/profile_dialogs.h"
 #include "xenia/ui/qt_util.h"
 #include "xenia/ui/simple_config_dialog_qt.h"
+#include "xenia/vfs/devices/disc_zarchive_device.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
 
 #if XE_PLATFORM_WIN32
 #include <windows.h>
@@ -51,6 +54,11 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if XE_PLATFORM_APPLE
+#include <crt_externs.h>
+#include <spawn.h>
+#define environ (*_NSGetEnviron())
+#endif
 #endif
 
 #if XE_PLATFORM_LINUX
@@ -68,6 +76,7 @@
 #ifdef None
 #undef None
 #endif
+
 #ifdef Success
 #undef Success
 #endif
@@ -228,10 +237,6 @@ DEFINE_bool(
     "depends on the 10bpc displaying capabilities of the actual display used.",
     "Display");
 
-DEFINE_int32(recent_titles_entry_amount, 10,
-             "Allows user to define how many titles is saved in list of "
-             "recently played titles.",
-             "General");
 #if XE_PLATFORM_LINUX
 DEFINE_bool(
     use_mangohud, false,
@@ -260,8 +265,7 @@ using xe::ui::UIEvent;
 using namespace xe::hid;
 using namespace xe::gpu;
 
-constexpr std::string_view kRecentlyPlayedTitlesFilename = "recent.toml";
-constexpr std::string_view kBaseTitle = "Xenia-edge";
+constexpr std::string_view kBaseTitle = "XeniOS";
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context,
@@ -298,8 +302,6 @@ EmulatorWindow::EmulatorWindow(Emulator* emulator,
 #endif
                 XE_BUILD_BRANCH "@" XE_BUILD_COMMIT_SHORT " on " XE_BUILD_DATE
                 ")";
-
-  LoadRecentlyLaunchedTitles();
 }
 
 std::unique_ptr<EmulatorWindow> EmulatorWindow::Create(
@@ -369,6 +371,18 @@ void EmulatorWindow::OnEmulatorInitialized() {
       QWidget* central_widget = qt_window->qwindow()->centralWidget();
       if (central_widget && central_widget->layout()) {
         game_list_dialog_qt_ = new GameListDialogQt(central_widget, this);
+        // Connect signals from game list dialog
+        QObject::connect(game_list_dialog_qt_,
+                         &GameListDialogQt::fileOpenRequested,
+                         [this]() { FileOpen(); });
+        QObject::connect(game_list_dialog_qt_,
+                         &GameListDialogQt::launchGameRequested,
+                         [this](const std::filesystem::path& path) {
+                           LaunchTitleInNewProcess(path);
+                         });
+        QObject::connect(game_list_dialog_qt_,
+                         &GameListDialogQt::settingsRequested,
+                         [this]() { ToggleConfigDialog(); });
         // Add it to the layout so it fills the window
         central_widget->layout()->addWidget(game_list_dialog_qt_);
       }
@@ -474,21 +488,72 @@ void EmulatorWindow::OnEmulatorInitialized() {
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
 #else
+#if XE_PLATFORM_APPLE
+    // Build arg_storage first, then create argv pointers.
+    // This avoids dangling pointers from vector reallocation.
+    std::vector<std::string> arg_storage;
+    arg_storage.push_back(executable_path.string());
+
+    if (!cvars::config.empty()) {
+      arg_storage.push_back("--config=" + cvars::config);
+    }
+    // Append to log file instead of overwriting
+    arg_storage.push_back("--log_append=true");
+    // Preserve return_to_ui through the title-to-title chain
+    if (cvars::return_to_ui) {
+      arg_storage.push_back("--return_to_ui=true");
+    }
+    // Preserve fullscreen state
+    if (window_->IsFullscreen()) {
+      arg_storage.push_back("--fullscreen=true");
+    }
+    if (!launch_module.empty()) {
+      arg_storage.push_back("--launch_module=" + launch_module);
+    }
+    if (launch_flags != 0) {
+      arg_storage.push_back(fmt::format("--launch_flags={}", launch_flags));
+    }
+    if (!launch_data.empty()) {
+      arg_storage.push_back("--launch_data=" + launch_data);
+    }
+    if (!host_path.empty()) {
+      arg_storage.push_back(host_path);
+    }
+
+    // Now build argv from the stable storage
+    std::vector<char*> argv;
+    argv.reserve(arg_storage.size() + 1);
+    for (auto& arg : arg_storage) {
+      argv.push_back(arg.data());
+    }
+    argv.push_back(nullptr);
+
+    pid_t pid = 0;
+    int spawn_result = posix_spawn(&pid, executable_path.c_str(), nullptr,
+                                   nullptr, argv.data(), environ);
+    if (spawn_result != 0) {
+      XELOGE("Failed to spawn process: {}", spawn_result);
+      return;
+    }
+#else
     pid_t pid = fork();
     if (pid == 0) {
       // Child process
+#if XE_PLATFORM_LINUX
       if (cvars::use_mangohud) {
         setenv("MANGOHUD", "1", 1);
       }
-
+#endif  // XE_PLATFORM_LINUX
       std::vector<std::string> arg_storage;
       std::vector<const char*> argv;
 
+#if XE_PLATFORM_LINUX
       std::string gamemode_cmd;
       if (cvars::use_gamemode) {
         gamemode_cmd = "gamemoderun";
         argv.push_back(gamemode_cmd.c_str());
       }
+#endif  // XE_PLATFORM_LINUX
       arg_storage.push_back(executable_path.string());
       argv.push_back(arg_storage.back().c_str());
 
@@ -527,16 +592,21 @@ void EmulatorWindow::OnEmulatorInitialized() {
       }
       argv.push_back(nullptr);
 
+#if XE_PLATFORM_LINUX
       if (cvars::use_gamemode) {
         execvp(gamemode_cmd.c_str(), const_cast<char**>(argv.data()));
       } else {
         execv(executable_path.c_str(), const_cast<char**>(argv.data()));
       }
+#else
+      execv(executable_path.c_str(), const_cast<char**>(argv.data()));
+#endif  // XE_PLATFORM_LINUX
       std::exit(1);
     } else if (pid < 0) {
       XELOGE("Failed to fork process");
       return;
     }
+#endif  // XE_PLATFORM_APPLE
 #endif
     // Exit directly - don't go through window close path which would
     // spawn a UI process if return_to_ui is set
@@ -585,16 +655,43 @@ void EmulatorWindow::EmulatorWindowListener::OnClosing(ui::UIEvent& e) {
         XELOGE("Failed to spawn UI process: {}", GetLastError());
       }
 #else
+#if XE_PLATFORM_APPLE
+      // Build arg_storage first, then create argv pointers to avoid
+      // dangling pointers from vector reallocation.
+      std::vector<std::string> arg_storage;
+      arg_storage.push_back(executable_path.string());
+
+      if (!cvars::config.empty()) {
+        arg_storage.push_back("--config=" + cvars::config);
+      }
+
+      std::vector<char*> argv;
+      argv.reserve(arg_storage.size() + 1);
+      for (auto& arg : arg_storage) {
+        argv.push_back(arg.data());
+      }
+      argv.push_back(nullptr);
+
+      pid_t pid = 0;
+      int spawn_result = posix_spawn(&pid, executable_path.c_str(), nullptr,
+                                     nullptr, argv.data(), environ);
+      if (spawn_result == 0) {
+        XELOGI("Spawned UI process");
+      } else {
+        XELOGE("Failed to spawn UI process: {}", spawn_result);
+      }
+#else
       pid_t pid = fork();
       if (pid == 0) {
         // Child process - become UI
         std::vector<const char*> argv;
+#if XE_PLATFORM_LINUX
         std::string gamemode_cmd;
-
         if (cvars::use_gamemode) {
           gamemode_cmd = "gamemoderun";
           argv.push_back(gamemode_cmd.c_str());
         }
+#endif  // XE_PLATFORM_LINUX
         argv.push_back(executable_path.c_str());
 
         std::string config_arg;
@@ -604,17 +701,22 @@ void EmulatorWindow::EmulatorWindowListener::OnClosing(ui::UIEvent& e) {
         }
         argv.push_back(nullptr);
 
+#if XE_PLATFORM_LINUX
         if (cvars::use_gamemode) {
           execvp(gamemode_cmd.c_str(), const_cast<char**>(argv.data()));
         } else {
           execv(executable_path.c_str(), const_cast<char**>(argv.data()));
         }
+#else
+        execv(executable_path.c_str(), const_cast<char**>(argv.data()));
+#endif  // XE_PLATFORM_LINUX
         std::exit(1);
       } else if (pid > 0) {
         XELOGI("Spawned UI process");
       } else {
         XELOGE("Failed to fork UI process");
       }
+#endif  // XE_PLATFORM_APPLE
 #endif
     }
 
@@ -725,16 +827,12 @@ bool EmulatorWindow::Initialize() {
 
     auto file_menu = MenuItem::Create(MenuItem::Type::kPopup, "&File");
     file_menu_ = file_menu.get();
-    auto recent_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Open Recent");
-    FillRecentlyLaunchedTitlesMenu(recent_menu.get());
     {
       auto open_item =
           MenuItem::Create(MenuItem::Type::kString, "&Open...", "Ctrl+O",
                            std::bind(&EmulatorWindow::FileOpen, this));
       file_open_item_ = open_item.get();
       file_menu->AddChild(std::move(open_item));
-      file_open_recent_menu_ = recent_menu.get();
-      file_menu->AddChild(std::move(recent_menu));
 #ifdef DEBUG
       file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
       file_menu->AddChild(
@@ -864,22 +962,12 @@ bool EmulatorWindow::Initialize() {
     auto help_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Help");
     {
       help_menu->AddChild(
-          MenuItem::Create(MenuItem::Type::kString, "FA&Q...", "F1",
+          MenuItem::Create(MenuItem::Type::kString, "FA&Q...",
                            std::bind(&EmulatorWindow::ShowFAQ, this)));
       help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
       help_menu->AddChild(MenuItem::Create(
           MenuItem::Type::kString, "Game &compatibility...",
           std::bind(&EmulatorWindow::ShowCompatibility, this)));
-      help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-      help_menu->AddChild(MenuItem::Create(
-          MenuItem::Type::kString, "Build commit on GitHub...", "F2",
-          std::bind(&EmulatorWindow::ShowBuildCommit, this)));
-      help_menu->AddChild(MenuItem::Create(
-          MenuItem::Type::kString, "Recent changes on GitHub...", []() {
-            LaunchWebBrowser(
-                "https://github.com/has207/xenia-edge/"
-                "compare/" XE_BUILD_COMMIT "..." XE_BUILD_BRANCH);
-          }));
       help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
       help_menu->AddChild(
           MenuItem::Create(MenuItem::Type::kString, "&About...",
@@ -1098,18 +1186,6 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
       CpuBreakIntoHostDebugger();
     } break;
 
-    case ui::VirtualKey::kF1: {
-      ShowFAQ();
-    } break;
-
-    case ui::VirtualKey::kF2: {
-      ShowBuildCommit();
-    } break;
-
-    case ui::VirtualKey::kF9: {
-      RunPreviouslyPlayedTitle();
-    } break;
-
     default:
       return;
   }
@@ -1237,7 +1313,7 @@ void EmulatorWindow::ExportScreenshot(const xe::ui::RawImage& image) {
     return;
   }
 
-  // Find where xenia.exe or xenia_edge.exe is located and create a
+  // Find where xenia.exe or xenios.exe is located and create a
   // screenshots folder
   auto screenshot_path =
       (xe::filesystem::GetExecutableFolder() / "screenshots" / title_id);
@@ -1380,20 +1456,20 @@ void EmulatorWindow::InstallContent() {
     emulator_->ProcessContentPackageHeader(entry.path_, entry);
   }
 
+  // Show dialog first, then start installation so the dialog is visible
+  // before any fast-completing installations finish
+  auto* dialog = new ui::ContentInstallDialogQt(
+      nullptr, emulator_->content_root(), content_installation_status);
+  dialog->show();
+  dialog->raise();
+  dialog->activateWindow();
+
   auto installationThread = std::thread([this, content_installation_status] {
     for (auto& entry : *content_installation_status) {
       emulator_->InstallContentPackage(entry.path_, entry);
     }
   });
   installationThread.detach();
-
-  auto* qt_window = dynamic_cast<ui::QtWindow*>(window_.get());
-  if (qt_window) {
-    auto* dialog = new ui::ContentInstallDialogQt(qt_window->qwindow(),
-                                                  emulator_->content_root(),
-                                                  content_installation_status);
-    dialog->show();
-  }
 }
 
 void EmulatorWindow::ExtractZarchive() {
@@ -1434,59 +1510,86 @@ void EmulatorWindow::ExtractZarchive() {
     return;
   }
 
-  std::string extract_overview = "";
+  auto zarchive_entries =
+      std::make_shared<std::vector<Emulator::ZarchiveEntry>>();
 
   for (auto& zarchive_file_path : zarchive_files) {
-    extract_overview += "\n" + path_to_utf8(zarchive_file_path);
-  }
+    auto abs_path = std::filesystem::absolute(zarchive_file_path);
+    std::filesystem::path abs_extract_dir;
 
-  app_context_.CallInUIThread([&]() {
-    new xe::ui::HostNotificationWindow(imgui_drawer(), "Extracting...",
-                                       string_util::trim(extract_overview), 0);
-  });
-
-  auto run = [this, extract_dir, zarchive_files]() -> void {
-    std::string summary = "";
-
-    for (auto& zarchive_file_path : zarchive_files) {
-      // Normalize the path and make absolute.
-      auto abs_path = std::filesystem::absolute(zarchive_file_path);
-      std::filesystem::path abs_extract_dir;
-
-      if (zarchive_files.size() > 1) {
-        abs_extract_dir =
-            std::filesystem::absolute((extract_dir / abs_path.stem()));
-      } else {
-        abs_extract_dir = std::filesystem::absolute(extract_dir);
-      }
-
-      XELOGI("Extracting zar package: {}\n",
-             zarchive_file_path.filename().string());
-
-      auto result =
-          emulator_->ExtractZarchivePackage(abs_path, abs_extract_dir);
-
-      if (result != X_STATUS_SUCCESS) {
-        std::error_code ec;
-
-        if (!std::filesystem::is_empty(abs_extract_dir)) {
-          std::filesystem::remove(abs_extract_dir, ec);
-        }
-
-        summary += fmt::format("\nFailed: {}", zarchive_file_path);
-
-        XELOGE("Failed to extract Zarchive package.", result);
-      } else {
-        summary += fmt::format("\nSuccess: {}", abs_extract_dir);
-      }
+    if (zarchive_files.size() > 1) {
+      abs_extract_dir =
+          std::filesystem::absolute((extract_dir / abs_path.stem()));
+    } else {
+      abs_extract_dir = std::filesystem::absolute(extract_dir);
     }
 
-    new xe::ui::HostNotificationWindow(imgui_drawer(), "Zar Extraction Summary",
-                                       string_util::trim(summary), 0);
-  };
+    zarchive_entries->emplace_back(abs_path, abs_extract_dir,
+                                   Emulator::ZarchiveOperation::Extract);
+    auto& entry = zarchive_entries->back();
+    entry.name_ = xe::path_to_utf8(abs_path.filename());
 
-  auto zarThread = std::thread(run);
-  zarThread.detach();
+    // Extract icon/title from STFS content within the archive
+    auto device = std::make_unique<vfs::DiscZarchiveDevice>("", abs_path);
+    if (device->Initialize()) {
+      std::function<void(vfs::Entry*)> find_stfs_info = [&](vfs::Entry* e) {
+        if (!entry.icon_data_.empty()) return;
+        if (e->attributes() & vfs::kFileAttributeDirectory) {
+          for (auto& child : e->children()) {
+            find_stfs_info(child.get());
+          }
+        } else if (e->size() >= sizeof(vfs::XContentContainerHeader)) {
+          vfs::File* file = nullptr;
+          if (e->Open(vfs::FileAccess::kGenericRead, &file) ==
+                  X_STATUS_SUCCESS &&
+              file) {
+            std::vector<uint8_t> header_data(
+                sizeof(vfs::XContentContainerHeader));
+            size_t bytes_read = 0;
+            if (file->ReadSync(header_data, 0, &bytes_read) ==
+                    X_STATUS_SUCCESS &&
+                bytes_read == sizeof(vfs::XContentContainerHeader)) {
+              auto* header = reinterpret_cast<vfs::XContentContainerHeader*>(
+                  header_data.data());
+              if (header->content_header.is_magic_valid()) {
+                auto title_name = xe::to_utf8(
+                    header->content_metadata.display_name(XLanguage::kEnglish));
+                if (!title_name.empty()) {
+                  entry.name_ = title_name;
+                }
+
+                if (header->content_metadata.title_thumbnail_size > 0 &&
+                    header->content_metadata.title_thumbnail_size <=
+                        vfs::XContentMetadata::kThumbLengthV1) {
+                  entry.icon_data_.assign(
+                      header->content_metadata.title_thumbnail,
+                      header->content_metadata.title_thumbnail +
+                          header->content_metadata.title_thumbnail_size);
+                }
+              }
+            }
+            file->Destroy();
+          }
+        }
+      };
+      auto* root = device->ResolvePath("/");
+      if (root) {
+        find_stfs_info(root);
+      }
+    }
+  }
+
+  auto* dialog = new ui::ContentInstallDialogQt(nullptr, zarchive_entries);
+  dialog->show();
+  dialog->raise();
+  dialog->activateWindow();
+
+  auto extractThread = std::thread([this, zarchive_entries] {
+    for (auto& entry : *zarchive_entries) {
+      emulator_->ExtractZarchivePackage(entry);
+    }
+  });
+  extractThread.detach();
 }
 
 void EmulatorWindow::CreateZarchive() {
@@ -1512,11 +1615,53 @@ void EmulatorWindow::CreateZarchive() {
     return;
   }
 
+  // Scan for STFS content to get game name/icon before showing save dialog.
+  struct SourceInfo {
+    std::filesystem::path stfs_path;
+    std::string title_name;
+    std::vector<uint8_t> icon_data;
+  };
+  std::vector<SourceInfo> source_infos(content_dirs.size());
+
+  for (size_t i = 0; i < content_dirs.size(); i++) {
+    auto abs_dir = std::filesystem::absolute(content_dirs[i]);
+    std::error_code ec;
+    // Top-level only to avoid false-positives on embedded STFS (DLC, etc.)
+    for (auto const& dirEntry :
+         std::filesystem::directory_iterator(abs_dir, ec)) {
+      if (!source_infos[i].icon_data.empty()) break;
+      if (dirEntry.is_regular_file()) {
+        const auto header =
+            vfs::XContentContainerDevice::ReadContainerHeader(dirEntry.path());
+        if (header && header->content_header.is_magic_valid()) {
+          source_infos[i].stfs_path = dirEntry.path();
+
+          source_infos[i].title_name = xe::to_utf8(
+              header->content_metadata.display_name(XLanguage::kEnglish));
+
+          if (header->content_metadata.title_thumbnail_size > 0 &&
+              header->content_metadata.title_thumbnail_size <=
+                  vfs::XContentMetadata::kThumbLengthV1) {
+            source_infos[i].icon_data.assign(
+                header->content_metadata.title_thumbnail,
+                header->content_metadata.title_thumbnail +
+                    header->content_metadata.title_thumbnail_size);
+          }
+        }
+      }
+    }
+  }
+
+  std::string default_name = content_dirs.front().stem().string();
+  if (content_dirs.size() == 1 && !source_infos[0].title_name.empty()) {
+    default_name = source_infos[0].title_name;
+  }
+
   if (content_dirs.size() == 1) {
     file_picker->set_mode(ui::FilePicker::Mode::kSave);
     file_picker->set_type(ui::FilePicker::Type::kFile);
     file_picker->set_multi_selection(false);
-    file_picker->set_file_name(content_dirs.front().stem().string());
+    file_picker->set_file_name(default_name);
     file_picker->set_default_extension("zar");
     file_picker->set_title("Zarchive File");
     file_picker->set_extensions({
@@ -1534,64 +1679,43 @@ void EmulatorWindow::CreateZarchive() {
     return;
   }
 
-  std::string create_overview = "";
+  auto zarchive_entries =
+      std::make_shared<std::vector<Emulator::ZarchiveEntry>>();
 
-  std::map<std::filesystem::path, std::filesystem::path> zarchive_files{};
-
-  for (auto& content_path : content_dirs) {
-    // Normalize the path and make absolute.
-    auto abs_content_dir = std::filesystem::absolute(content_path);
+  for (size_t i = 0; i < content_dirs.size(); i++) {
+    auto abs_content_dir = std::filesystem::absolute(content_dirs[i]);
     std::filesystem::path abs_zarchive_file;
 
     if (content_dirs.size() > 1) {
+      std::string stem = !source_infos[i].title_name.empty()
+                             ? source_infos[i].title_name
+                             : abs_content_dir.stem().string();
       abs_zarchive_file = std::filesystem::absolute(
-          (zarchive_dir / abs_content_dir.stem()).replace_extension("zar"));
+          (zarchive_dir / stem).replace_extension("zar"));
     } else {
       abs_zarchive_file = std::filesystem::absolute(zarchive_dir);
     }
 
-    zarchive_files[content_path] = abs_zarchive_file;
-
-    create_overview += "\n" + path_to_utf8(abs_zarchive_file);
+    zarchive_entries->emplace_back(abs_content_dir, abs_zarchive_file,
+                                   Emulator::ZarchiveOperation::Create);
+    auto& entry = zarchive_entries->back();
+    entry.name_ = xe::path_to_utf8(abs_zarchive_file.filename());
+    entry.stfs_path_ = source_infos[i].stfs_path;
+    entry.icon_data_ = std::move(source_infos[i].icon_data);
   }
 
-  app_context_.CallInUIThread([&]() {
-    new xe::ui::HostNotificationWindow(imgui_drawer(), "Creating...",
-                                       string_util::trim(create_overview), 0);
-  });
+  // Show dialog first, then start creation
+  auto* dialog = new ui::ContentInstallDialogQt(nullptr, zarchive_entries);
+  dialog->show();
+  dialog->raise();
+  dialog->activateWindow();
 
-  auto run = [this, zarchive_files]() -> void {
-    std::string summary = "";
-
-    for (auto const& [content_path, zarchive_file] : zarchive_files) {
-      // Normalize the path and make absolute.
-      auto abs_content_dir = std::filesystem::absolute(content_path);
-
-      XELOGI("Creating zar package: {}\n", zarchive_file.filename().string());
-
-      auto result =
-          emulator_->CreateZarchivePackage(abs_content_dir, zarchive_file);
-
-      if (result != X_ERROR_SUCCESS) {
-        std::error_code ec;
-
-        // delete incomplete output file
-        std::filesystem::remove(zarchive_file, ec);
-
-        summary += fmt::format("\nFailed: {}", abs_content_dir);
-
-        XELOGE("Failed to create Zarchive package.", result);
-      } else {
-        summary += fmt::format("\nSuccess: {}", zarchive_file);
-      }
+  auto createThread = std::thread([this, zarchive_entries] {
+    for (auto& entry : *zarchive_entries) {
+      emulator_->CreateZarchivePackage(entry);
     }
-
-    new xe::ui::HostNotificationWindow(imgui_drawer(), "Zar Creation Summary",
-                                       string_util::trim(summary), 0);
-  };
-
-  auto zarThread = std::thread(run);
-  zarThread.detach();
+  });
+  createThread.detach();
 }
 
 void EmulatorWindow::ShowContentDirectory() {
@@ -1776,30 +1900,26 @@ void EmulatorWindow::ToggleControllerVibration() {
 }
 
 void EmulatorWindow::ShowCompatibility() {
-  const std::string_view base_url =
-      "https://github.com/xenia-canary/game-compatibility/issues";
+  const std::string_view base_url = "https://xenios.jp/compatibility";
   std::string url;
-  // Avoid searching for a title ID of "00000000".
   uint32_t title_id = emulator_->title_id();
   if (!title_id) {
-    url = base_url;
+    url = std::string(base_url);
   } else {
-    url = fmt::format("{}?q=is%3Aissue+is%3Aopen+{:08X}", base_url, title_id);
+    url = fmt::format("{}?q={:08X}", base_url, title_id);
   }
   LaunchWebBrowser(url);
 }
 
-void EmulatorWindow::ShowFAQ() {
-  LaunchWebBrowser("https://github.com/xenia-canary/xenia-canary/wiki/FAQ");
-}
+void EmulatorWindow::ShowFAQ() { LaunchWebBrowser("https://xenios.jp/faq"); }
 
 void EmulatorWindow::ShowBuildCommit() {
 #ifdef XE_BUILD_IS_PR
   LaunchWebBrowser(
-      "https://github.com/has207/xenia-edge/pull/" XE_BUILD_PR_NUMBER);
+      "https://github.com/xenios-jp/XeniOS/pull/" XE_BUILD_PR_NUMBER);
 #else
   LaunchWebBrowser(
-      "https://github.com/has207/xenia-edge/commit/" XE_BUILD_COMMIT);
+      "https://github.com/xenios-jp/XeniOS/commit/" XE_BUILD_COMMIT);
 #endif
 }
 
@@ -1809,32 +1929,37 @@ void EmulatorWindow::ShowAbout() {
     return;
   }
 
-  QString about_text = QString(
-                           "<h2>Xenia Edge</h2>"
-                           "<p>Experimental fork of Xenia Canary</p>"
-                           "<p><b>Branch:</b> %1<br>"
-                           "<b>Commit:</b> %2<br>"
-                           "<b>Build Date:</b> %3</p>"
-                           "<p>For more information, visit <a "
-                           "href=\"https://github.com/has207/"
-                           "xenia-edge\">github.com/has207/xenia-edge</a></p>"
-                           "<p style=\"font-size: small;\">Icons by <a "
-                           "href=\"https://icons8.com\">Icons8</a></p>")
-                           .arg(XE_BUILD_BRANCH)
-                           .arg(XE_BUILD_COMMIT_SHORT)
-                           .arg(XE_BUILD_DATE);
+  QString about_text =
+      QString(
+          "<h2>XeniOS</h2>"
+          "<p>Experimental Apple-focused fork of Xenia, based on Xenia Edge</p>"
+          "<p><b>Branch:</b> %1<br>"
+          "<b>Commit:</b> %2<br>"
+          "<b>Build Date:</b> %3<br>"
+          "<b>Qt Version:</b> %4</p>"
+          "<p>For more information, visit <a "
+          "href=\"https://xenios.jp\">xenios.jp</a>, <a "
+          "href=\"https://discord.gg/QwcTtNKTGf\">Discord</a>, or <a "
+          "href=\"https://github.com/xenios-jp/"
+          "XeniOS\">github.com/xenios-jp/XeniOS</a></p>"
+          "<p><small>Icons by <a "
+          "href=\"https://icons8.com\">Icons8</a></small></p>")
+          .arg(XE_BUILD_BRANCH)
+          .arg(XE_BUILD_COMMIT_SHORT)
+          .arg(XE_BUILD_DATE)
+          .arg(qVersion());
 
   QMessageBox about_box(qt_window->qwindow());
-  about_box.setWindowTitle("About Xenia Edge");
+  about_box.setWindowTitle("About XeniOS");
   about_box.setTextFormat(Qt::RichText);
   about_box.setText(about_text);
   about_box.setStandardButtons(QMessageBox::Ok);
   about_box.setDefaultButton(QMessageBox::Ok);
 
-  // Center the button by using a custom layout
+  // Ensure dialog sizes to fit all content
   QGridLayout* layout = qobject_cast<QGridLayout*>(about_box.layout());
   if (layout) {
-    layout->setAlignment(Qt::AlignCenter);
+    layout->setSizeConstraint(QLayout::SetMinimumSize);
   }
 
   about_box.exec();
@@ -2359,18 +2484,55 @@ void EmulatorWindow::LaunchTitleInNewProcess(
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
 #else
+#if XE_PLATFORM_APPLE
+  // Build arg_storage first, then create argv pointers to avoid
+  // dangling pointers from vector reallocation.
+  std::vector<std::string> arg_storage;
+  arg_storage.push_back(executable_path.string());
+
+  // Pass the config file if one is being used
+  if (!cvars::config.empty()) {
+    arg_storage.push_back("--config=" + cvars::config);
+  }
+
+  // Tell game process to return to UI when it exits
+  arg_storage.push_back("--return_to_ui=true");
+
+  // Add the target game file
+  if (!path_to_file.empty()) {
+    arg_storage.push_back(path_to_file.string());
+  }
+
+  std::vector<char*> argv;
+  argv.reserve(arg_storage.size() + 1);
+  for (auto& arg : arg_storage) {
+    argv.push_back(arg.data());
+  }
+  argv.push_back(nullptr);
+
+  pid_t pid = 0;
+  int spawn_result = posix_spawn(&pid, executable_path.c_str(), nullptr,
+                                 nullptr, argv.data(), environ);
+  if (spawn_result != 0) {
+    XELOGE("Failed to spawn process: {}", spawn_result);
+    return;
+  }
+#else
   // On Linux/Unix, use fork/exec for proper process creation
   pid_t pid = fork();
 
   if (pid == 0) {
     // Child process
 
+#if XE_PLATFORM_LINUX
     // Set MangoHUD environment variable if enabled
     if (cvars::use_mangohud) {
       setenv("MANGOHUD", "1", 1);
     }
+#endif  // XE_PLATFORM_LINUX
 
     std::vector<const char*> argv;
+#if XE_PLATFORM_LINUX
     std::string gamemode_cmd;
 
     // If GameMode is enabled, use gamemoderun as the executable
@@ -2381,6 +2543,9 @@ void EmulatorWindow::LaunchTitleInNewProcess(
     } else {
       argv.push_back(executable_path.c_str());
     }
+#else
+    argv.push_back(executable_path.c_str());
+#endif  // XE_PLATFORM_LINUX
 
     // Pass the config file if one is being used
     std::string config_arg;
@@ -2401,22 +2566,28 @@ void EmulatorWindow::LaunchTitleInNewProcess(
     argv.push_back(nullptr);
 
     // Execute the new process
+#if XE_PLATFORM_LINUX
     if (cvars::use_gamemode) {
       // Use execvp to search PATH for gamemoderun
       execvp(gamemode_cmd.c_str(), const_cast<char**>(argv.data()));
     } else {
       execv(executable_path.c_str(), const_cast<char**>(argv.data()));
     }
-
     // If exec returns, it failed
     XELOGE("Failed to execute: {}",
            cvars::use_gamemode ? gamemode_cmd : executable_path.string());
+#else
+    execv(executable_path.c_str(), const_cast<char**>(argv.data()));
+    // If exec returns, it failed
+    XELOGE("Failed to execute: {}", executable_path.string());
+#endif  // XE_PLATFORM_LINUX
     std::exit(1);
   } else if (pid < 0) {
     // Fork failed
     XELOGE("Failed to fork process");
     return;
   }
+#endif  // XE_PLATFORM_APPLE
 #endif
 
   XELOGI("Launched title in new process: {}", path_to_file.string());
@@ -2496,8 +2667,6 @@ xe::X_STATUS EmulatorWindow::RunTitle(
 
     emulator_->file_system()->Clear();
   } else {
-    AddRecentlyLaunchedTitle(path_to_file, emulator_->title_name());
-
     auto xam =
         emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
             "xam.xex");
@@ -2508,130 +2677,31 @@ xe::X_STATUS EmulatorWindow::RunTitle(
   return result;
 }
 
-void EmulatorWindow::RunPreviouslyPlayedTitle() {
-  if (recently_launched_titles_.size() >= 1) {
-    LaunchTitleInNewProcess(recently_launched_titles_[0].path_to_file);
-  }
-}
-
-void EmulatorWindow::FillRecentlyLaunchedTitlesMenu(
-    xe::ui::MenuItem* recent_menu) {
-  for (int i = 0; i < recently_launched_titles_.size(); ++i) {
-    std::string hotkey = (i == 0) ? "F9" : "";
-
-    const RecentTitleEntry& entry = recently_launched_titles_[i];
-    const std::string item_text = entry.title_name.empty()
-                                      ? entry.path_to_file.string()
-                                      : entry.title_name;
-
-    recent_menu->AddChild(MenuItem::Create(MenuItem::Type::kString, item_text,
-                                           hotkey,
-                                           [this, path = entry.path_to_file]() {
-                                             LaunchTitleInNewProcess(path);
-                                           }));
-  }
-}
-
 std::filesystem::path EmulatorWindow::GetFilePickerInitialDirectory() const {
-  // Return the directory of the most recently played game if available
-  if (!recently_launched_titles_.empty()) {
-    const auto& recent_path = recently_launched_titles_[0].path_to_file;
-    if (std::filesystem::exists(recent_path)) {
-      auto parent_dir = recent_path.parent_path();
-      if (!parent_dir.empty() && std::filesystem::exists(parent_dir)) {
-        return parent_dir;
-      }
+  auto kernel_state = emulator_->kernel_state();
+  if (!kernel_state) {
+    return {};
+  }
+
+  auto xam_state = kernel_state->xam_state();
+  if (!xam_state) {
+    return {};
+  }
+
+  auto profile_manager = xam_state->profile_manager();
+  if (!profile_manager) {
+    return {};
+  }
+
+  auto recent_path = profile_manager->GetMostRecentlyPlayedTitlePath();
+  if (!recent_path.empty() && std::filesystem::exists(recent_path)) {
+    auto parent_dir = recent_path.parent_path();
+    if (!parent_dir.empty() && std::filesystem::exists(parent_dir)) {
+      return parent_dir;
     }
   }
-  return std::filesystem::path();
-}
 
-void EmulatorWindow::LoadRecentlyLaunchedTitles() {
-  // Clear existing titles before loading
-  recently_launched_titles_.clear();
-
-  std::ifstream file(emulator()->storage_root() /
-                     kRecentlyPlayedTitlesFilename);
-  if (!file.is_open()) {
-    return;
-  }
-
-  toml::parse_result parsed_file;
-  try {
-    parsed_file = toml::parse(file);
-  } catch (toml::parse_error& exception) {
-    XELOGE("Cannot parse file: recent.toml. Error: {}", exception.what());
-    return;
-  }
-
-  if (parsed_file.is_table()) {
-    for (const auto& [index, entry] : *parsed_file.as_table()) {
-      if (!entry.is_table()) {
-        continue;
-      }
-
-      const toml::table* entry_table = entry.as_table();
-
-      std::string title_name =
-          entry_table->get_as<std::string>("title_name")->get();
-      std::string path_str = entry_table->get_as<std::string>("path")->get();
-      std::time_t last_run_time =
-          entry_table->get_as<int64_t>("last_run_time")->get();
-
-      std::error_code ec = {};
-      auto file_path = xe::to_path(path_str);
-      if (path_str.empty() || !std::filesystem::exists(file_path, ec)) {
-        continue;
-      }
-
-      recently_launched_titles_.push_back(
-          {title_name, file_path, last_run_time});
-    }
-  }
-}
-
-void EmulatorWindow::AddRecentlyLaunchedTitle(
-    std::filesystem::path path_to_file, std::string title_name) {
-  if (cvars::recent_titles_entry_amount <= 0) {
-    return;
-  }
-
-  // Check if game is already on list and pop it to front
-  auto entry_index = std::find_if(recently_launched_titles_.cbegin(),
-                                  recently_launched_titles_.cend(),
-                                  [&title_name](const RecentTitleEntry& entry) {
-                                    return entry.title_name == title_name;
-                                  });
-  if (entry_index != recently_launched_titles_.cend()) {
-    recently_launched_titles_.erase(entry_index);
-  }
-
-  recently_launched_titles_.insert(recently_launched_titles_.cbegin(),
-                                   {title_name, path_to_file, time(nullptr)});
-  // Serialize to toml
-  auto toml_table = toml::table();
-
-  uint8_t index = 0;
-  for (const RecentTitleEntry& entry : recently_launched_titles_) {
-    auto entry_table = toml::table();
-
-    // Fill entry under specific index.
-    std::string str_path = xe::path_to_utf8(entry.path_to_file);
-    entry_table.insert("title_name", entry.title_name);
-    entry_table.insert("path", str_path);
-    entry_table.insert("last_run_time", entry.last_run_time);
-
-    toml_table.insert(std::to_string(index++), entry_table);
-
-    if (index >= cvars::recent_titles_entry_amount) {
-      break;
-    }
-  }
-  // Open and write serialized data.
-  std::ofstream file(emulator()->storage_root() / kRecentlyPlayedTitlesFilename,
-                     std::ofstream::trunc);
-  file << toml_table;
-  file.close();
+  return {};
 }
 
 void EmulatorWindow::ClearDialogs() {

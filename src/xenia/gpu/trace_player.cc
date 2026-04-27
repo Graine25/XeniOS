@@ -156,6 +156,8 @@ void TracePlayer::PlayTraceOnThread(const uint8_t* trace_data,
         auto cmd = reinterpret_cast<const PacketEndCommand*>(trace_ptr);
         trace_ptr += sizeof(*cmd);
         if (pending_packet) {
+          // Use the backend override here so trace playback matches the live
+          // ringbuffer execution path rather than the base PM4 executor.
           command_processor->ExecutePacket(pending_packet->base_ptr,
                                            pending_packet->count);
           pending_packet = nullptr;

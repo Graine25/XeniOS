@@ -1231,20 +1231,40 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
         }
       }
       // Handle wide 1D textures (> 8192 wide) mapped to 2D grids.
-      // The shader needs to convert the 1D normalized coordinate to 2D
-      // coordinates for the texture which is stored as a 2D array with rows.
       if (instr.dimension == xenos::FetchOpDimension::k1D &&
           size_1d_width_minus_1_uint != spv::NoResult) {
-        // size_1d_width_minus_1_uint is the original uint width_minus_1 from
-        // the fetch constant (24 bits), before conversion to float.
-        // Check if original_width > kTexture2DCubeMaxWidthHeight (8192).
+        // Check if the fetch constant's actual dimension is k1D (word 5, bits
+        // 9-10). If not, skip wide 1D handling as size bits differ per
+        // dimension.
+        id_vector_temp_.clear();
+        id_vector_temp_.push_back(const_int_0_);
+        id_vector_temp_.push_back(builder_->makeIntConstant(
+            int((fetch_constant_word_0_index + 5) >> 2)));
+        id_vector_temp_.push_back(builder_->makeIntConstant(
+            int((fetch_constant_word_0_index + 5) & 3)));
+        spv::Id fetch_constant_word_5_for_1d =
+            builder_->createLoad(builder_->createAccessChain(
+                                     spv::StorageClassUniform,
+                                     uniform_fetch_constants_, id_vector_temp_),
+                                 spv::NoPrecision);
+        spv::Id data_dimension_1d = builder_->createTriOp(
+            spv::OpBitFieldUExtract, type_uint_, fetch_constant_word_5_for_1d,
+            builder_->makeUintConstant(9), builder_->makeUintConstant(2));
+        spv::Id is_actually_1d = builder_->createBinOp(
+            spv::OpIEqual, type_bool_, data_dimension_1d,
+            builder_->makeUintConstant(
+                static_cast<unsigned int>(xenos::DataDimension::k1D)));
+
+        // Check if wide (> 8192) - only valid if dimension is actually 1D.
         spv::Id max_width_minus_1 =
             builder_->makeUintConstant(xenos::kTexture2DCubeMaxWidthHeight - 1);
+        spv::Id is_wide = builder_->createBinOp(spv::OpUGreaterThan, type_bool_,
+                                                size_1d_width_minus_1_uint,
+                                                max_width_minus_1);
         spv::Id is_wide_1d = builder_->createBinOp(
-            spv::OpUGreaterThan, type_bool_, size_1d_width_minus_1_uint,
-            max_width_minus_1);
+            spv::OpLogicalAnd, type_bool_, is_actually_1d, is_wide);
 
-        // Only apply remapping if the texture is wide.
+        // Only apply remapping if actually 1D and wide.
         SpirvBuilder::IfBuilder if_wide_1d(
             is_wide_1d, spv::SelectionControlDontFlattenMask, *builder_);
         spv::Id coord_x_wide, coord_y_wide;

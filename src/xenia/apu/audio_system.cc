@@ -116,7 +116,7 @@ void AudioSystem::WorkerThreadMain() {
     if (result.first == threading::WaitResult::kSuccess &&
         result.second == kMaximumClientCount) {
       // Shutdown event signaled.
-      if (paused_) {
+      if (paused_.load(std::memory_order_acquire)) {
         pause_fence_.Signal();
         threading::Wait(resume_event_.get(), false);
       }
@@ -177,6 +177,25 @@ void AudioSystem::Shutdown() {
   if (worker_thread_) {
     worker_thread_->Wait(0, 0, 0, nullptr);
     worker_thread_.reset();
+  }
+
+  // Unregister all active clients to shut down their audio drivers before
+  // the semaphores are destroyed with this AudioSystem.
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    for (size_t i = 0; i < kMaximumClientCount; ++i) {
+      if (clients_[i].in_use) {
+        DestroyDriver(clients_[i].driver);
+        if (clients_[i].wrapped_callback_arg) {
+          memory()->SystemHeapFree(clients_[i].wrapped_callback_arg);
+        }
+        clients_[i].driver = nullptr;
+        clients_[i].callback = 0;
+        clients_[i].callback_arg = 0;
+        clients_[i].wrapped_callback_arg = 0;
+        clients_[i].in_use = false;
+      }
+    }
   }
 }
 
@@ -369,10 +388,9 @@ bool AudioSystem::Restore(ByteStream* stream) {
 }
 
 void AudioSystem::Pause() {
-  if (paused_) {
+  if (paused_.exchange(true, std::memory_order_acq_rel)) {
     return;
   }
-  paused_ = true;
 
   // Kind of a hack, but it works.
   shutdown_event_->Set();
@@ -382,10 +400,9 @@ void AudioSystem::Pause() {
 }
 
 void AudioSystem::Resume() {
-  if (!paused_) {
+  if (!paused_.exchange(false, std::memory_order_acq_rel)) {
     return;
   }
-  paused_ = false;
 
   resume_event_->Set();
 

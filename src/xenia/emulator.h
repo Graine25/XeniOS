@@ -104,6 +104,8 @@ class Emulator {
   // Are we currently running a title?
   bool is_title_open() const { return title_id_.has_value(); }
 
+  uint32_t main_thread_id();
+
   // Window used for displaying graphical output. Can be null.
   ui::Window* display_window() const { return display_window_; }
 
@@ -167,6 +169,12 @@ class Emulator {
           graphics_system_factory,
       std::function<std::vector<std::unique_ptr<hid::InputDriver>>(ui::Window*)>
           input_driver_factory);
+
+  // Tears down all subsystems. Called by the destructor and by RelaunchTitle.
+  void Shutdown();
+
+  // Mounts scratch, cache, and devkit drives based on cvars.
+  void MountStandardDrives();
 
   // Terminates the currently running title.
   X_STATUS TerminateTitle();
@@ -294,13 +302,72 @@ class Emulator {
   X_STATUS InstallContentPackage(const std::filesystem::path& path,
                                  ContentInstallEntry& installation_info);
 
+  enum class ZarchiveOperation : uint8_t { Create, Extract };
+
+  struct ZarchiveEntry {
+    ZarchiveEntry(std::filesystem::path source, std::filesystem::path dest,
+                  ZarchiveOperation op)
+        : path_(source), data_installation_path_(dest), operation_(op) {};
+
+    ZarchiveEntry(ZarchiveEntry&& other) noexcept
+        : name_(std::move(other.name_)),
+          path_(std::move(other.path_)),
+          data_installation_path_(std::move(other.data_installation_path_)),
+          stfs_path_(std::move(other.stfs_path_)),
+          operation_(other.operation_),
+          content_size_(other.content_size_),
+          currently_installed_size_(other.currently_installed_size_),
+          installation_state_(other.installation_state_),
+          installation_result_(other.installation_result_),
+          installation_error_message_(
+              std::move(other.installation_error_message_)),
+          icon_data_(std::move(other.icon_data_)),
+          cancelled_(other.cancelled_.load()) {}
+
+    ZarchiveEntry& operator=(ZarchiveEntry&& other) noexcept {
+      if (this != &other) {
+        name_ = std::move(other.name_);
+        path_ = std::move(other.path_);
+        data_installation_path_ = std::move(other.data_installation_path_);
+        stfs_path_ = std::move(other.stfs_path_);
+        operation_ = other.operation_;
+        content_size_ = other.content_size_;
+        currently_installed_size_ = other.currently_installed_size_;
+        installation_state_ = other.installation_state_;
+        installation_result_ = other.installation_result_;
+        installation_error_message_ =
+            std::move(other.installation_error_message_);
+        icon_data_ = std::move(other.icon_data_);
+        cancelled_.store(other.cancelled_.load());
+      }
+      return *this;
+    }
+
+    ZarchiveEntry(const ZarchiveEntry&) = delete;
+    ZarchiveEntry& operator=(const ZarchiveEntry&) = delete;
+
+    std::string name_{};
+    std::filesystem::path path_;
+    std::filesystem::path data_installation_path_;
+    std::filesystem::path stfs_path_;  // Set when source contains STFS content
+    ZarchiveOperation operation_;
+
+    uint64_t content_size_ = 0;
+    uint64_t currently_installed_size_ = 0;
+
+    InstallState installation_state_{};
+    X_STATUS installation_result_{};
+    std::string installation_error_message_{};
+
+    std::vector<uint8_t> icon_data_;
+    std::atomic<bool> cancelled_{false};
+  };
+
   // Extract content of zar package to desired directory.
-  X_STATUS ExtractZarchivePackage(const std::filesystem::path& path,
-                                  const std::filesystem::path& extract_dir);
+  X_STATUS ExtractZarchivePackage(ZarchiveEntry& entry);
 
   // Pack contents of a folder into a zar package.
-  X_STATUS CreateZarchivePackage(const std::filesystem::path& inputDirectory,
-                                 const std::filesystem::path& outputFile);
+  X_STATUS CreateZarchivePackage(ZarchiveEntry& entry);
 
   struct PackContext {
     std::filesystem::path outputFilePath;
@@ -314,6 +381,12 @@ class Emulator {
   bool SaveToFile(const std::filesystem::path& path);
   bool RestoreFromFile(const std::filesystem::path& path);
 
+  // Full in-process relaunch: terminates threads, Shutdown(), Setup(),
+  // then launches with new params. Must be called from a non-guest thread.
+  void RelaunchTitle(const std::string& host_path,
+                     const std::string& launch_module, uint32_t launch_flags,
+                     std::vector<uint8_t> launch_data);
+
   // The game can request another title to be loaded.
   const std::filesystem::path GetNewDiscPath(std::string window_message = "");
 
@@ -325,6 +398,9 @@ class Emulator {
   xe::Delegate<> on_patch_apply;
   xe::Delegate<> on_terminate;
   xe::Delegate<> on_exit;
+
+  // Fired before Shutdown() during relaunch, while subsystems are still alive.
+  xe::Delegate<> on_before_shutdown;
 
   // Called when XamLoaderLaunchTitle requests launching a new title.
   // The callback should spawn a new process with the given parameters.
@@ -360,6 +436,7 @@ class Emulator {
                           const std::string_view module_path);
 
   std::filesystem::path command_line_;
+  std::filesystem::path last_launch_path_;  // persists across relaunch
   std::filesystem::path storage_root_;
   std::filesystem::path content_root_;
   std::filesystem::path cache_root_;
@@ -392,7 +469,17 @@ class Emulator {
 
   bool paused_;
   bool restoring_;
+  bool relaunching_ = false;
   threading::Fence restore_fence_;  // Fired on restore finish.
+
+  // Persisted across Shutdown/Setup for relaunch.
+  bool require_cpu_backend_ = false;
+  std::function<std::unique_ptr<apu::AudioSystem>(cpu::Processor*)>
+      audio_system_factory_;
+  std::function<std::unique_ptr<gpu::GraphicsSystem>()>
+      graphics_system_factory_;
+  std::function<std::vector<std::unique_ptr<hid::InputDriver>>(ui::Window*)>
+      input_driver_factory_;
 
   LaunchNewTitleCallback on_launch_new_title_;
   DiscSwapCallback on_disc_swap_;

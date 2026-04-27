@@ -23,7 +23,9 @@ DEFINE_bool(
     "processors do their own automatic prefetching.",
     "CPU");
 
-DEFINE_bool(no_reserved_ops, false,
+constexpr bool kNoReservedOpsDefault = false;
+
+DEFINE_bool(no_reserved_ops, kNoReservedOpsDefault,
             "For testing whether a game may have races with a broken reserved "
             "load/store impl",
             "CPU");

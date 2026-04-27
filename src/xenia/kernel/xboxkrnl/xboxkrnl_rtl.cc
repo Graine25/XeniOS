@@ -229,8 +229,14 @@ void RtlInitAnsiString_entry(pointer_t<X_ANSI_STRING> destination,
 DECLARE_XBOXKRNL_EXPORT1(RtlInitAnsiString, kNone, kImplemented);
 // https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-rtlupcaseunicodechar
 dword_result_t RtlUpcaseUnicodeChar_entry(dword_t SourceCharacter) {
-  return std::use_facet<std::ctype<char16_t>>(std::locale())
-      .toupper(SourceCharacter);
+#if XE_PLATFORM_APPLE
+  char16_t source = static_cast<char16_t>(SourceCharacter.value());
+  wchar_t wide = static_cast<wchar_t>(source);
+  return static_cast<uint16_t>(std::towupper(wide));
+#else
+  return std::use_facet<std::ctype<char16_t> >(std::locale())
+      .toupper(static_cast<char16_t>(SourceCharacter.value()));
+#endif  // XE_PLATFORM_APPLE
 }
 DECLARE_XBOXKRNL_EXPORT1(RtlUpcaseUnicodeChar, kNone, kImplemented);
 
@@ -542,6 +548,34 @@ struct X_RTL_CRITICAL_SECTION {
 #pragma pack(pop)
 static_assert_size(X_RTL_CRITICAL_SECTION, 28);
 
+static void RecoverCriticalSection(pointer_t<X_RTL_CRITICAL_SECTION> cs,
+                                   uint32_t current_thread,
+                                   const char* reason) {
+  const int32_t lock_count = cs->lock_count;
+  const int32_t recursion_count = cs->recursion_count;
+  const uint32_t owning_thread = cs->owning_thread;
+
+  XELOGW(
+      "Recovering critical section {}: cs=0x{:08X} owner=0x{:08X} "
+      "current=0x{:08X} lock_count={} recursion_count={}",
+      reason, cs.guest_address(), owning_thread, current_thread, lock_count,
+      recursion_count);
+
+  int32_t release_depth = recursion_count > 0 ? recursion_count : 1;
+  int32_t normalized_lock_count = lock_count - release_depth;
+  if (normalized_lock_count < -1) {
+    normalized_lock_count = -1;
+  }
+
+  cs->owning_thread = 0;
+  cs->recursion_count = 0;
+  cs->lock_count = normalized_lock_count;
+
+  if (normalized_lock_count != -1) {
+    xeKeSetEvent(reinterpret_cast<X_KEVENT*>(cs.host_address()), 1, 0);
+  }
+}
+
 void xeRtlInitializeCriticalSection(X_RTL_CRITICAL_SECTION* cs,
                                     uint32_t cs_ptr) {
   cs->header.type = 1;      // EventSynchronizationObject (auto reset)
@@ -625,7 +659,14 @@ void RtlEnterCriticalSection_entry(pointer_t<X_RTL_CRITICAL_SECTION> cs) {
                             nullptr);
   }
 
-  assert_true(cs->owning_thread == 0);
+  if (cs->owning_thread != 0) {
+    XELOGW(
+        "RtlEnterCriticalSection: stealing waited critical section "
+        "cs=0x{:08X} previous_owner=0x{:08X} current=0x{:08X} lock_count={} "
+        "recursion_count={}",
+        cs.guest_address(), uint32_t(cs->owning_thread), cur_thread,
+        int32_t(cs->lock_count), int32_t(cs->recursion_count));
+  }
   cs->owning_thread = cur_thread;
   cs->recursion_count = 1;
 }
@@ -664,13 +705,18 @@ void RtlLeaveCriticalSection_entry(pointer_t<X_RTL_CRITICAL_SECTION> cs) {
     XELOGE("Null critical section in RtlLeaveCriticalSection!");
     return;
   }
-  assert_true(cs->owning_thread == XThread::GetCurrentThread()->guest_object());
+  uint32_t current_thread = XThread::GetCurrentThread()->guest_object();
+  if (cs->owning_thread != current_thread) {
+    RecoverCriticalSection(cs, current_thread, "owner-mismatch");
+    return;
+  }
 
   // Drop recursion count - if it isn't zero we still have the lock.
-  assert_true(cs->recursion_count > 0);
+  if (cs->recursion_count <= 0) {
+    RecoverCriticalSection(cs, current_thread, "invalid-recursion");
+    return;
+  }
   if (--cs->recursion_count != 0) {
-    assert_true(cs->recursion_count >= 0);
-
     xe::atomic_dec(&cs->lock_count);
     return;
   }

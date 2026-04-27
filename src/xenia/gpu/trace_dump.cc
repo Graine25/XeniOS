@@ -10,14 +10,17 @@
 #include "xenia/gpu/trace_dump.h"
 
 #include "third_party/stb/stb_image_write.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/string.h"
 #include "xenia/base/threading.h"
+#include "xenia/config.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/memory.h"
+#include "xenia/storage_flags.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/presenter.h"
 #include "xenia/ui/window.h"
@@ -35,6 +38,44 @@ namespace xe {
 namespace gpu {
 
 using namespace xe::gpu::xenos;
+
+namespace {
+
+std::filesystem::path ResolveStorageRoot() {
+  std::filesystem::path storage_root = cvars::storage_root;
+  if (storage_root.empty()) {
+    storage_root = xe::filesystem::GetExecutableFolder();
+    if (!cvars::portable &&
+        !std::filesystem::exists(storage_root / "portable.txt")) {
+      storage_root = xe::filesystem::GetUserFolder() / "Xenia";
+    }
+  }
+  return std::filesystem::absolute(storage_root);
+}
+
+std::filesystem::path ResolveContentRoot(
+    const std::filesystem::path& storage_root) {
+  std::filesystem::path content_root = cvars::content_root;
+  if (content_root.empty()) {
+    content_root = storage_root / "content";
+  } else if (!content_root.is_absolute()) {
+    content_root = storage_root / content_root;
+  }
+  return std::filesystem::absolute(content_root);
+}
+
+std::filesystem::path ResolveCacheRoot(
+    const std::filesystem::path& storage_root) {
+  std::filesystem::path cache_root = cvars::cache_root;
+  if (cache_root.empty()) {
+    cache_root = storage_root / "cache_host";
+  } else if (!cache_root.is_absolute()) {
+    cache_root = storage_root / cache_root;
+  }
+  return std::filesystem::absolute(cache_root);
+}
+
+}  // namespace
 
 TraceDump::TraceDump() = default;
 
@@ -93,8 +134,19 @@ int TraceDump::Main(const std::vector<std::string>& args) {
 }
 
 bool TraceDump::Setup() {
+  storage_root_ = ResolveStorageRoot();
+  content_root_ = ResolveContentRoot(storage_root_);
+  cache_root_ = ResolveCacheRoot(storage_root_);
+
+  XELOGI("Storage root: {}", storage_root_);
+  XELOGI("Content root: {}", content_root_);
+  XELOGI("Host cache root: {}", cache_root_);
+
+  config::SetupConfig(storage_root_);
+
   // Create the emulator but don't initialize so we can setup the window.
-  emulator_ = std::make_unique<Emulator>("", "", "", "");
+  emulator_ =
+      std::make_unique<Emulator>("", storage_root_, content_root_, cache_root_);
   X_STATUS result = emulator_->Setup(
       nullptr, nullptr, false, nullptr,
       [this]() { return CreateGraphicsSystem(); }, nullptr);
@@ -103,6 +155,7 @@ bool TraceDump::Setup() {
     return false;
   }
   graphics_system_ = emulator_->graphics_system();
+  graphics_system_->EnsurePresenterForCapture();
   player_ = std::make_unique<TracePlayer>(graphics_system_);
   return true;
 }
@@ -113,6 +166,17 @@ bool TraceDump::Load(const std::filesystem::path& trace_file_path) {
   if (!player_->Open(xe::path_to_utf8(trace_file_path_))) {
     XELOGE("Could not load trace file");
     return false;
+  }
+
+  if (graphics_system_) {
+    uint32_t title_id = player_->header()->title_id;
+    if (title_id != 0) {
+      XELOGI("Trace dump cache root: {}", cache_root_);
+      // Trace dumps begin rendering immediately, so prewarm storage
+      // synchronously to maximize warm-cache reuse on short runs.
+      graphics_system_->InitializeShaderStorage(cache_root_, title_id, true,
+                                                nullptr);
+    }
   }
 
   return true;

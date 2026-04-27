@@ -13,9 +13,12 @@
 #include <memory>
 #include <string>
 
-#include <QPointer>
+#include "xenia/base/platform.h"
 
+#if !XE_PLATFORM_IOS
+#include <QPointer>
 class QTimer;
+#endif
 
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
@@ -37,12 +40,6 @@ class QTimer;
 
 namespace xe {
 namespace app {
-
-struct RecentTitleEntry {
-  std::string title_name;
-  std::filesystem::path path_to_file;
-  std::time_t last_run_time;
-};
 
 class EmulatorWindow {
  public:
@@ -93,9 +90,6 @@ class EmulatorWindow {
   xe::X_STATUS RunTitle(const std::filesystem::path& path_to_file);
   void UpdateTitle();
 
-  void AddRecentlyLaunchedTitle(std::filesystem::path path_to_file,
-                                std::string title_name);
-
   void SetFullscreen(bool fullscreen);
   void ToggleFullscreen();
   void SetInitializingShaderStorage(bool initializing);
@@ -112,9 +106,6 @@ class EmulatorWindow {
   void ToggleControllerVibration();
   void SetHotkeysState(bool enabled) { disable_hotkeys_ = !enabled; }
   void FileOpen();
-  const std::vector<RecentTitleEntry>& GetRecentlyLaunchedTitles() const {
-    return recently_launched_titles_;
-  }
 
   // Helper methods for updating cvars from Qt dialogs (public for Qt dialogs)
   void UpdateAntiAliasingCvar(gpu::CommandProcessor::SwapPostEffect effect);
@@ -239,11 +230,7 @@ class EmulatorWindow {
   static std::string CanonicalizeFileExtension(
       const std::filesystem::path& path);
 
-  void RunPreviouslyPlayedTitle();
-  void FillRecentlyLaunchedTitlesMenu(xe::ui::MenuItem* recent_menu);
-  void LoadRecentlyLaunchedTitles();
-
-  // Get initial directory for file pickers based on recently played games
+  // Get initial directory for file pickers based on most recently played game
   std::filesystem::path GetFilePickerInitialDirectory() const;
 
   void ClearDialogs();
@@ -256,8 +243,10 @@ class EmulatorWindow {
   bool is_game_process_;
   EmulatorWindowListener window_listener_;
 
+#if !XE_PLATFORM_IOS
   // Timer for debouncing resize events (save config after resize is done)
   std::unique_ptr<QTimer> resize_save_timer_;
+#endif
   uint32_t pending_resize_width_ = 0;
   uint32_t pending_resize_height_ = 0;
 
@@ -276,19 +265,20 @@ class EmulatorWindow {
 
   ui::ImGuiPostProcessingDialog* postprocessing_dialog_ = nullptr;
   ui::ImGuiPerformanceDialog* performance_dialog_ = nullptr;
+#if !XE_PLATFORM_IOS
   QPointer<class GameListDialogQt> game_list_dialog_qt_;
+#endif
   ProfileConfigDialog* profile_dialog_ = nullptr;
+#if !XE_PLATFORM_IOS
   QPointer<class SimpleConfigDialogQt> simple_config_dialog_qt_;
   QPointer<class ConfigDialogQt> config_dialog_qt_;
+#endif
   ui::ImGuiContextMenu* context_menu_ = nullptr;
   ui::ImGuiXmpDialog* xmp_dialog_ = nullptr;
-
-  std::vector<RecentTitleEntry> recently_launched_titles_;
 
   // Menu items that need to be enabled/disabled based on child process state
   ui::MenuItem* file_menu_ = nullptr;
   ui::MenuItem* file_open_item_ = nullptr;
-  ui::MenuItem* file_open_recent_menu_ = nullptr;
 };
 
 }  // namespace app

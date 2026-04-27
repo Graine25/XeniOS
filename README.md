@@ -1,40 +1,72 @@
 <p align="center">
-    <a href="https://github.com/xenia-canary/xenia-canary/tree/canary_experimental/assets/icon">
-        <img height="256px" src="https://raw.githubusercontent.com/xenia-canary/xenia/master/assets/icon/256.png" />
-    </a>
+    <img height="256px" src="assets/apple/xenios-readme-icon.png" alt="XeniOS app icon" />
 </p>
 
-<h1 align="center">Xenia Edge - Xbox 360 Emulator</h1>
+<h1 align="center">XeniOS - Xbox 360 Emulator</h1>
 
-Xenia Edge is yet another experimental fork of the Xenia emulator, mainly based on [Xenia Canary](https://github.com/xenia-canary/xenia-canary) but with the aim of
-quicker iteration and improvements to Vulkan backend and Linux platform in particular. Windows of course remains fully supported as well and will benefit from changes made here especially with its Vulkan backend.
+XeniOS is an experimental Apple-focused fork of Xenia, currently based on
+[Xenia Edge](https://github.com/has207/xenia-edge). It exists as a fast-moving
+place to develop, test, and ship iOS and macOS work while also carrying
+platform changes that benefit ARM64 Windows, Linux, and Android. Relevant
+improvements are intended to flow back upstream over time.
 
-## Status
+<p align="center">
+  <a href="https://xenios.jp">Website</a> ◦
+  <a href="https://github.com/xenios-jp/XeniOS/releases">Releases</a> ◦
+  <a href="https://xenios.jp/docs">Docs</a> ◦
+  <a href="https://xenios.jp/faq">FAQ</a> ◦
+  <a href="https://xenios.jp/compatibility">Compatibility</a> ◦
+  <a href="https://discord.gg/QwcTtNKTGf">Discord</a> ◦
+  <a href="https://github.com/xenios-jp/XeniOS/issues">Issues</a>
+</p>
 
-Buildbot | Status
--------- | ------
-Windows | [![CI](https://github.com/has207/xenia-edge/actions/workflows/Windows_build.yml/badge.svg?branch=edge)](https://github.com/has207/xenia-edge/actions/workflows/Windows_build.yml) [![Codacy Badge](https://app.codacy.com/project/badge/Grade/cd506034fd8148309a45034925648499)](https://app.codacy.com/gh/has207/xenia-edge/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-Linux | [![CI](https://github.com/has207/xenia-edge/actions/workflows/Linux_build.yml/badge.svg?branch=edge)](https://github.com/has207/xenia-edge/actions/workflows/Linux_build.yml)
+## Current Focus
 
-Releases
---------
-[Latest](https://github.com/has207/xenia-edge/releases/latest) ◦ [All](https://github.com/has207/xenia-edge/releases)
+- iOS
+- macOS (Apple Silicon)
+- macOS (Intel)
 
-<h1 align="center">Inherited from Xenia Canary</h1>
+Current published releases focus on iOS and macOS.
+For Windows or Linux builds, use [Xenia Edge](https://github.com/has207/xenia-edge) or [Xenia Canary](https://github.com/xenia-canary/xenia-canary).
+
+## Why This Fork Exists
+
+Xenia development is relatively thinly staffed right now, and upstream is not
+set up for fast iteration on Apple-specific packaging, documentation, release
+flow, and user experience. XeniOS exists so that work can move faster in a
+repository where the full product experience can be shaped directly, from the
+app itself to releases, docs, compatibility reporting, and the public website
+at [xenios.jp](https://xenios.jp).
+
+The goal is not to keep good work siloed here forever. The goal is to iterate
+quickly, build a more polished user-facing experience for Apple platforms, and
+then contribute the useful technical improvements back upstream into the
+broader Xenia community, especially
+[Xenia Canary](https://github.com/xenia-canary/xenia-canary).
+
+## Downloads
+
+Download XeniOS from
+[GitHub Releases](https://github.com/xenios-jp/XeniOS/releases).
+
+- [Latest GitHub release](https://github.com/xenios-jp/XeniOS/releases/latest)
+- [All GitHub releases](https://github.com/xenios-jp/XeniOS/releases)
 
 ## Quickstart
 
-See the [Quickstart](https://github.com/xenia-canary/xenia-canary/wiki/Quickstart) page.
+Start with the public docs at [xenios.jp/docs](https://xenios.jp/docs).
 
 ## FAQ
 
-See the [frequently asked questions](https://github.com/xenia-canary/xenia-canary/wiki/FAQ) page.
+See the public FAQ at [xenios.jp/faq](https://xenios.jp/faq).
 
 ## Game Compatibility
 
-See the [Game compatibility list](https://github.com/xenia-canary/game-compatibility/issues)
-for currently tracked games, and feel free to contribute your own updates,
-screenshots, and information there following the [existing conventions](https://github.com/xenia-canary/game-compatibility/blob/canary/README.md).
+Browse currently tracked games on
+[xenios.jp/compatibility](https://xenios.jp/compatibility).
+
+To file a compatibility report, use the
+[GitHub compatibility tracker](https://github.com/xenios-jp/game-compatibility/issues/new/choose).
 
 ## Building
 
@@ -50,15 +82,14 @@ is wide open greenfield fun.
 
 **For general rules and guidelines please see [CONTRIBUTING.md](.github/CONTRIBUTING.md).**
 
-Fixes and optimizations are always welcome (please!), but in addition to
-that there are some major work areas still untouched:
+Fixes and optimizations are always welcome, especially around Apple platform
+performance, UI polish, compatibility coverage, packaging, and tooling.
 
-* Help work through [missing functionality/bugs in games](https://github.com/xenia-canary/xenia-canary/labels/compat)
-* Reduce the size of Xenia's [huge log files](https://github.com/xenia-canary/xenia-canary/issues/1526)
-* Skilled with Linux? A strong contributor is needed to [help with porting](https://github.com/xenia-canary/xenia-canary/labels/platform-linux)
-
-See more projects [good for contributors](https://github.com/xenia-canary/xenia-canary/labels/good%20first%20issue). It's a good idea to ask on Discord and check the issues page before beginning work on
-something.
+Start with the
+[XeniOS issue tracker](https://github.com/xenios-jp/XeniOS/issues),
+join the [XeniOS Discord](https://discord.gg/QwcTtNKTGf), check
+[CONTRIBUTING.md](.github/CONTRIBUTING.md), and coordinate before starting
+larger work.
 
 ## Disclaimer
 

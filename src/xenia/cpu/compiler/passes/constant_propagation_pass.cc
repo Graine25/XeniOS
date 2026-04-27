@@ -274,7 +274,7 @@ bool ConstantPropagationPass::Run(HIRBuilder* builder, bool& result) {
               auto heap = memory->LookupHeap(address);
               uint32_t protect;
               if (heap && heap->QueryProtect(address, &protect) &&
-                  !(protect & kMemoryProtectWrite) &&
+                  !IsWritableProtect(protect) &&
                   (protect & kMemoryProtectRead)) {
                 // Memory is readonly - can just return the value.
                 auto host_addr = memory->TranslateVirtual(address);

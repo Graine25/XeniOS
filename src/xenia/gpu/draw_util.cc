@@ -28,6 +28,13 @@ DEFINE_bool(
     "is necessary for certain games to display the scene graphics).",
     "GPU");
 
+DEFINE_double(
+    depth_bias_decal_clamp, 0.0,
+    "Minimum depth bias for projected decals. Set to 0 to disable. UE3 titles "
+    "often use very small bias values (~0.00005) that cause Z-fighting on "
+    "near-coplanar decal projections with host render target paths.",
+    "GPU");
+
 namespace xe {
 namespace gpu {
 namespace draw_util {
@@ -110,6 +117,22 @@ void GetPreferredFacePolygonOffset(const RegisterFile& regs,
       offset = regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET);
     }
   }
+  // Clamp small positive depth bias to prevent Z-fighting on decals.
+  // UE3 titles often use very small bias values (~0.00005f) that cause
+  // Z-fighting on near-coplanar projected decals (static deferred decal style
+  // draws). A minimum of ~0.01f keeps them stable even at extreme grazing
+  // angles. The threshold where Z-fighting typically kicks in is around
+  // 0.001f or smaller.
+  float min_depth_bias = float(cvars::depth_bias_decal_clamp);
+  if (min_depth_bias > 0.0f && offset > 0.0f && offset < min_depth_bias) {
+    offset = min_depth_bias;
+    // When pushing geometry away (positive offset), ensure the slope scale
+    // doesn't counteract it by going negative at grazing angles.
+    if (scale < 0.0f) {
+      scale = 0.0f;
+    }
+  }
+
   scale_out = scale;
   offset_out = offset;
 }
@@ -912,15 +935,15 @@ void GetResolveEdramTileSpan(ResolveEdramInfo edram_info,
 
 constexpr ResolveCopyShaderInfo
     resolve_copy_shader_info[size_t(ResolveCopyShaderIndex::kCount)] = {
-        {"Resolve Copy Fast 32bpp 1x/2xMSAA", false, 4, 4, 6, 3},
-        {"Resolve Copy Fast 32bpp 4xMSAA", false, 4, 4, 6, 3},
-        {"Resolve Copy Fast 64bpp 1x/2xMSAA", false, 4, 4, 5, 3},
-        {"Resolve Copy Fast 64bpp 4xMSAA", false, 3, 4, 5, 3},
-        {"Resolve Copy Full 8bpp", true, 2, 3, 6, 3},
-        {"Resolve Copy Full 16bpp", true, 2, 3, 5, 3},
-        {"Resolve Copy Full 32bpp", true, 2, 4, 5, 3},
-        {"Resolve Copy Full 64bpp", true, 2, 4, 5, 3},
-        {"Resolve Copy Full 128bpp", true, 2, 4, 4, 3},
+        {"Resolve Copy Fast 32bpp 1x/2xMSAA", 6, 3},
+        {"Resolve Copy Fast 32bpp 4xMSAA", 6, 3},
+        {"Resolve Copy Fast 64bpp 1x/2xMSAA", 5, 3},
+        {"Resolve Copy Fast 64bpp 4xMSAA", 5, 3},
+        {"Resolve Copy Full 8bpp", 6, 3},
+        {"Resolve Copy Full 16bpp", 5, 3},
+        {"Resolve Copy Full 32bpp", 5, 3},
+        {"Resolve Copy Full 64bpp", 5, 3},
+        {"Resolve Copy Full 128bpp", 4, 3},
 };
 XE_MSVC_OPTIMIZE_SMALL()
 bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
@@ -956,10 +979,29 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
     assert_always();
     return false;
   }
+  if (!memory.physical_membase()) {
+    XELOGE("GetResolveInfo: physical_membase is null");
+    return false;
+  }
+  const uint32_t vertex_bytes = fetch.size * sizeof(uint32_t);
+  const uint32_t vertex_address_bytes = fetch.address * sizeof(uint32_t);
+  if (vertex_address_bytes >= 0x20000000u ||
+      vertex_address_bytes > 0x20000000u - vertex_bytes) {
+    XELOGE(
+        "GetResolveInfo: vertex fetch address out of range (addr=0x{:08X}, "
+        "bytes=0x{:X})",
+        vertex_address_bytes, vertex_bytes);
+    return false;
+  }
   trace_writer.WriteMemoryRead(fetch.address * sizeof(uint32_t),
                                fetch.size * sizeof(uint32_t));
   const float* vertices_guest = reinterpret_cast<const float*>(
-      memory.TranslatePhysical(fetch.address * sizeof(uint32_t)));
+      memory.TranslatePhysical(vertex_address_bytes));
+  if (!vertices_guest) {
+    XELOGE("GetResolveInfo: failed to translate vertex fetch address 0x{:08X}",
+           vertex_address_bytes);
+    return false;
+  }
   // Most vertices have a negative half-pixel offset applied, which we reverse.
   float half_pixel_offset =
       regs.Get<reg::PA_SU_VTX_CNTL>().pix_center == xenos::PixelCenter::kD3DZero

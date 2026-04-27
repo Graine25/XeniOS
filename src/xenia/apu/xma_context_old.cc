@@ -25,6 +25,8 @@ extern "C" {
 #pragma warning(disable : 4101 4244 5033)
 #endif
 #include "third_party/FFmpeg/libavcodec/avcodec.h"
+#include "third_party/FFmpeg/libavutil/channel_layout.h"
+#include "third_party/FFmpeg/libavutil/error.h"
 #if XE_COMPILER_MSVC
 #pragma warning(pop)
 #endif
@@ -40,10 +42,7 @@ XmaContextOld::XmaContextOld() = default;
 
 XmaContextOld::~XmaContextOld() {
   if (av_context_) {
-    if (avcodec_is_open(av_context_)) {
-      avcodec_close(av_context_);
-    }
-    av_free(av_context_);
+    avcodec_free_context(&av_context_);
   }
   if (av_frame_) {
     av_frame_free(&av_frame_);
@@ -78,7 +77,7 @@ int XmaContextOld::Setup(uint32_t id, Memory* memory, uint32_t guest_ptr) {
   }
 
   // Initialize these to 0. They'll actually be set later.
-  av_context_->channels = 0;
+  av_context_->ch_layout = AVChannelLayout{};
   av_context_->sample_rate = 0;
 
   av_frame_ = av_frame_alloc();
@@ -124,17 +123,6 @@ void XmaContextOld::Enable() {
   set_is_enabled(true);
 }
 
-bool XmaContextOld::Block(bool poll) {
-  if (!lock_.try_lock()) {
-    if (poll) {
-      return false;
-    }
-    lock_.lock();
-  }
-  lock_.unlock();
-  return true;
-}
-
 void XmaContextOld::Clear() {
   std::lock_guard<xe_mutex> lock(lock_);
   XELOGAPU("XmaContext: reset context {}", id());
@@ -167,7 +155,7 @@ void XmaContextOld::Disable() {
 void XmaContextOld::Release() {
   // Lock it in case the decoder thread is working on it now.
   std::lock_guard<xe_mutex> lock(lock_);
-  assert_true(is_allocated_ == true);
+  assert_true(is_allocated());
 
   set_is_allocated(false);
   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
@@ -517,9 +505,8 @@ void XmaContextOld::Decode(XMA_CONTEXT_DATA* data) {
         if (offset == -1) {
           // No more frames.
           SwapInputBuffer(data);
-          // TODO partial frames? end?
-          XELOGE("XmaContext {}: TODO partial frames? end?", id());
-          assert_always("TODO");
+          XELOGE("XmaContext {}: no more frames in packet stream", id());
+          data->parser_error_status = 4;
           return;
         } else {
           data->input_buffer_read_offset = offset;
@@ -633,23 +620,22 @@ void XmaContextOld::Decode(XMA_CONTEXT_DATA* data) {
     auto ret = avcodec_send_packet(av_context_, av_packet_);
     if (ret < 0) {
       XELOGE("XmaContext {}: Error - Sending packet for decoding failed", id());
-      // TODO bail out
-      assert_always();
+      data->parser_error_status = 4;
+      SwapInputBuffer(data);
+      return;
     }
     ret = avcodec_receive_frame(av_context_, av_frame_);
-    /*
-    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-      // TODO AVERROR_EOF???
-      break;
-    else
-    */
+    if (ret == AVERROR(EAGAIN)) {
+      return;
+    }
     if (ret < 0) {
-      XELOGE("XmaContext {}: Error - Decoding failed", id());
-      data->parser_error_status = 4;  // TODO(Gliniak): Find all parsing errors
-                                      // and create enumerator from them
+      char errbuf[AV_ERROR_MAX_STRING_SIZE];
+      av_strerror(ret, errbuf, sizeof(errbuf));
+      XELOGE("XmaContext {}: Error - Decoding failed: {} ({})", id(), errbuf,
+             ret);
+      data->parser_error_status = 4;
       SwapInputBuffer(data);
-      assert_always();
-      return;  // TODO bail out
+      return;
     }
     assert_true(ret == 0);
 
@@ -664,7 +650,8 @@ void XmaContextOld::Decode(XMA_CONTEXT_DATA* data) {
 
       //			dump_raw(av_frame_, id());
       ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data),
-                   bool(av_frame_->channels > 1), raw_frame_.data());
+                   bool(av_frame_->ch_layout.nb_channels > 1),
+                   raw_frame_.data());
       // decoded_consumed_samples_ += kSamplesPerFrame;
 
       auto byte_count = kBytesPerFrameChannel << data->is_stereo;
@@ -739,8 +726,23 @@ void XmaContextOld::Decode(XMA_CONTEXT_DATA* data) {
         offset =
             xma::GetPacketFrameOffset(packet) + packet_idx * kBitsPerPacket;
       }
-      // TODO buffer bounds check
-      assert_true(data->input_buffer_read_offset < offset);
+      // Some streams can report a non-advancing or out-of-range next frame
+      // offset. Treat this as a parser error and recover instead of aborting.
+      if (offset <= data->input_buffer_read_offset ||
+          offset > current_input_size * 8) {
+        XELOGAPU(
+            "XmaContext {}: invalid next frame offset {} (current={}, "
+            "buffer_bits={})",
+            id(), offset, data->input_buffer_read_offset,
+            current_input_size * 8);
+        data->parser_error_status = 4;
+        if (is_streaming) {
+          SwapInputBuffer(data);
+        } else {
+          is_stream_done_ = true;
+        }
+        break;
+      }
       data->input_buffer_read_offset = offset;
     }
   }
@@ -928,13 +930,15 @@ int XmaContextOld::PrepareDecoder(uint8_t* packet, int sample_rate,
   // Re-initialize the context with new sample rate and channels.
   uint32_t channels = is_two_channel ? 2 : 1;
   if (av_context_->sample_rate != sample_rate ||
-      av_context_->channels != channels) {
-    // We have to reopen the codec so it'll realloc whatever data it needs.
-    // TODO(DrChat): Find a better way.
-    avcodec_close(av_context_);
+      av_context_->ch_layout.nb_channels != (int)channels) {
+    // We have to recreate the codec context so it'll realloc whatever data it
+    // needs.
+    avcodec_free_context(&av_context_);
+    av_context_ = avcodec_alloc_context3(av_codec_);
 
     av_context_->sample_rate = sample_rate;
-    av_context_->channels = channels;
+    av_channel_layout_default(&av_context_->ch_layout, channels);
+    av_context_->flags2 |= AV_CODEC_FLAG2_SKIP_MANUAL;
 
     if (avcodec_open2(av_context_, av_codec_, NULL) < 0) {
       XELOGE("XmaContext: Failed to reopen FFmpeg context");

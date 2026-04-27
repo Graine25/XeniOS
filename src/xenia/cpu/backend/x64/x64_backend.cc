@@ -10,6 +10,12 @@
 #include "xenia/cpu/backend/x64/x64_backend.h"
 
 #include <cstddef>
+#if XE_PLATFORM_MAC
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <mach/vm_statistics.h>
+#include <sys/mman.h>
+#endif
 #include "third_party/capstone/include/capstone/capstone.h"
 #include "third_party/capstone/include/capstone/x86.h"
 
@@ -26,11 +32,7 @@
 #include "xenia/cpu/stack_walker.h"
 #include "xenia/cpu/xex_module.h"
 
-DEFINE_bool(record_mmio_access_exceptions, true,
-            "For guest addresses records whether we caught any mmio accesses "
-            "for them. This info can then be used on a subsequent run to "
-            "instruct the recompiler to emit checks",
-            "x64");
+DECLARE_bool(record_mmio_access_exceptions);
 
 DEFINE_int64(max_stackpoints, 65536,
              "Max number of host->guest stack mappings we can record.", "x64");
@@ -129,6 +131,34 @@ X64Backend::X64Backend() : Backend(), code_cache_(nullptr) {
       break;
     }
   }
+  if (!buf_trampoline_code) {
+#if XE_PLATFORM_MAC && XE_ARCH_AMD64
+    XELOGW(
+        "Failed to allocate fixed guest trampoline range, trying "
+        "VM_FLAGS_4GB_CHUNK.");
+    mach_vm_size_t trampoline_size =
+        sizeof(guest_trampoline_template) * MAX_GUEST_TRAMPOLINES;
+    constexpr mach_vm_address_t kMax32BitAddress = 0x100000000ULL;
+    for (int attempt = 0; attempt < 16 && !buf_trampoline_code; ++attempt) {
+      mach_vm_address_t addr = 0;
+      kern_return_t kr =
+          mach_vm_allocate(mach_task_self(), &addr, trampoline_size,
+                           VM_FLAGS_ANYWHERE | VM_FLAGS_4GB_CHUNK);
+      if (kr != KERN_SUCCESS) {
+        break;
+      }
+      if (addr < kMax32BitAddress &&
+          mprotect(reinterpret_cast<void*>(addr), trampoline_size,
+                   PROT_READ | PROT_WRITE | PROT_EXEC) == 0) {
+        buf_trampoline_code = reinterpret_cast<void*>(addr);
+        break;
+      }
+      mach_vm_deallocate(mach_task_self(), addr, trampoline_size);
+    }
+#else
+    XELOGW("Failed to allocate fixed guest trampoline range.");
+#endif
+  }
   xenia_assert(buf_trampoline_code);
   guest_trampoline_memory_ = (uint8_t*)buf_trampoline_code;
   guest_trampoline_address_bitmap_.Resize(MAX_GUEST_TRAMPOLINES);
@@ -223,10 +253,18 @@ bool X64Backend::Initialize(Processor* processor) {
   }
 
   Xbyak::util::Cpu cpu;
+#if XE_PLATFORM_MAC
+  if (!cpu.has(Xbyak::util::Cpu::tAVX)) {
+    XELOGW(
+        "This CPU does not support AVX. Continuing anyway (performance and "
+        "compatibility may be reduced).");
+  }
+#else
   if (!cpu.has(Xbyak::util::Cpu::tAVX)) {
     XELOGE("This CPU does not support AVX. The emulator will now crash.");
     return false;
   }
+#endif
 
   // Need movbe to do advanced LOAD/STORE tricks.
   if (cvars::x64_extension_mask & kX64EmitMovbe) {
@@ -579,7 +617,11 @@ void X64Backend::RecordMMIOExceptionForGuestInstruction(void* host_address) {
             xex_guest_module->GetInstructionAddressFlags(guestaddr);
 
         if (icf) {
+          const bool was_mmio = icf->accessed_mmio;
           icf->accessed_mmio = true;
+          if (!was_mmio) {
+            xex_guest_module->FlushInfoCache();
+          }
         }
       }
     }
@@ -666,7 +708,7 @@ HostToGuestThunk X64HelperEmitter::EmitHostToGuestThunk() {
   mov(rdx, qword[rsp + 8 * 2]);
   mov(r8, qword[rsp + 8 * 3]);
   ret();
-#elif XE_PLATFORM_LINUX || XE_PLATFORM_MAC
+#elif XE_PLATFORM_LINUX || XE_PLATFORM_APPLE
   // System-V ABI args:
   // rdi = target
   // rsi = arg0 (context)
@@ -762,7 +804,7 @@ GuestToHostThunk X64HelperEmitter::EmitGuestToHostThunk() {
 
   add(rsp, stack_size);
   ret();
-#elif XE_PLATFORM_LINUX || XE_PLATFORM_MAC
+#elif XE_PLATFORM_LINUX || XE_PLATFORM_APPLE
   // This function is being called using the Microsoft ABI from CallNative
   // rcx = target function
   // rdx = arg0
@@ -865,7 +907,7 @@ ResolveFunctionThunk X64HelperEmitter::EmitResolveFunctionThunk() {
 
   add(rsp, stack_size);
   jmp(rax);
-#elif XE_PLATFORM_LINUX || XE_PLATFORM_MAC
+#elif XE_PLATFORM_LINUX || XE_PLATFORM_APPLE
   // Function is called with the following params:
   // ebx = target PPC address
   // rsi = context
@@ -1610,7 +1652,7 @@ void X64HelperEmitter::EmitSaveVolatileRegs() {
   // mov(qword[rsp + offsetof(StackLayout::Thunk, r[0])], rax);
   mov(qword[rsp + offsetof(StackLayout::Thunk, r[1])], rcx);
   mov(qword[rsp + offsetof(StackLayout::Thunk, r[2])], rdx);
-#if XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX || XE_PLATFORM_MAC
   mov(qword[rsp + offsetof(StackLayout::Thunk, r[3])], rsi);
   mov(qword[rsp + offsetof(StackLayout::Thunk, r[4])], rdi);
 #endif
@@ -1631,7 +1673,7 @@ void X64HelperEmitter::EmitLoadVolatileRegs() {
   // mov(rax, qword[rsp + offsetof(StackLayout::Thunk, r[0])]);
   mov(rcx, qword[rsp + offsetof(StackLayout::Thunk, r[1])]);
   mov(rdx, qword[rsp + offsetof(StackLayout::Thunk, r[2])]);
-#if XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX || XE_PLATFORM_MAC
   mov(rsi, qword[rsp + offsetof(StackLayout::Thunk, r[3])]);
   mov(rdi, qword[rsp + offsetof(StackLayout::Thunk, r[4])]);
 #endif

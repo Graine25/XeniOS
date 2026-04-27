@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "third_party/fmt/include/fmt/format.h"
-#include "xenia/base/byte_order.h"
 #include "xenia/kernel/util/xex2_info.h"
 #include "xenia/kernel/util/xex2_util.h"
 

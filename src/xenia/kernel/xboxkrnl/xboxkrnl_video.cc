@@ -24,7 +24,8 @@ DEFINE_int32(
     "2=NTSC-J\n   3=PAL\n",
     "Video");
 
-DEFINE_bool(use_50Hz_mode, false, "Enables usage of PAL-50 mode.", "Video");
+// Defined in gpu_flags.cc
+DECLARE_bool(use_50Hz_mode);
 DEFINE_bool(interlaced, false, "Toggles interlaced mode.", "Video");
 
 // TODO: This is stored in XConfig somewhere, probably in video flags.

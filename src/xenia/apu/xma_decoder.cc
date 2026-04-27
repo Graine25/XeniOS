@@ -26,6 +26,7 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xthread.h"
 extern "C" {
+#include "third_party/FFmpeg/libavutil/cpu.h"
 #include "third_party/FFmpeg/libavutil/log.h"
 }  // extern "C"
 
@@ -56,13 +57,28 @@ extern "C" {
 DEFINE_bool(ffmpeg_verbose, false, "Verbose FFmpeg output (debug and above)",
             "APU");
 
-DEFINE_bool(use_dedicated_xma_thread, true,
+#if XE_ARCH_ARM64
+constexpr bool kDisableFfmpegNeonDefault = true;
+#else
+constexpr bool kDisableFfmpegNeonDefault = false;
+#endif
+DEFINE_bool(ffmpeg_disable_neon_on_arm64, kDisableFfmpegNeonDefault,
+            "Disable FFmpeg NEON runtime paths on ARM64 for decode parity.",
+            "APU");
+
+#if XE_ARCH_ARM64
+constexpr bool kUseDedicatedXmaThreadDefault = false;
+#else
+constexpr bool kUseDedicatedXmaThreadDefault = true;
+#endif
+
+DEFINE_bool(use_dedicated_xma_thread, kUseDedicatedXmaThreadDefault,
             "Enables XMA decoding on separate thread. Disabled should produce "
             "better results, but decrease performance a bit.",
             "APU");
 
 DEFINE_string(
-    xma_decoder, "old",
+    xma_decoder, "new",
     "Decoder version used to process XMA audio.\n"
     "Use: [fake, master, old, new]\n"
     " fake: \n  No audio will be decoded.\n"
@@ -72,6 +88,8 @@ DEFINE_string(
     " new: \n  New version of decoder. Provides highest stability, but isn't "
     "yet finished.\n",
     "APU");
+
+UPDATE_from_string(xma_decoder, 2026, 2, 16, 12, "old");
 
 namespace xe {
 namespace apu {
@@ -130,6 +148,13 @@ void av_log_callback(void* avcl, int level, const char* fmt, va_list va) {
 X_STATUS XmaDecoder::Setup(kernel::KernelState* kernel_state) {
   // Setup ffmpeg logging callback
   av_log_set_callback(av_log_callback);
+
+#if XE_ARCH_ARM64
+  if (cvars::ffmpeg_disable_neon_on_arm64) {
+    const int cpu_flags = av_get_cpu_flags();
+    av_force_cpu_flags(cpu_flags & ~AV_CPU_FLAG_NEON);
+  }
+#endif
 
   // Let the processor know we want register access callbacks.
   memory_->AddVirtualMappedRange(
@@ -195,28 +220,24 @@ X_STATUS XmaDecoder::Setup(kernel::KernelState* kernel_state) {
 }
 
 void XmaDecoder::WorkerThreadMain() {
-  uint32_t idle_loop_count = 0;
   while (worker_running_) {
     // Okay, let's loop through XMA contexts to find ones we need to decode!
     bool did_work = false;
     for (uint32_t n = 0; n < kContextCount; n++) {
-      did_work = contexts_[n]->Work() || did_work;
-
-      // TODO: Need thread safety to do this.
-      // Probably not too important though.
-      // registers_.current_context = n;
-      // registers_.next_context = (n + 1) % kContextCount;
+      bool worked = contexts_[n]->Work();
+      if (worked) {
+        contexts_[n]->SignalWorkDone();
+      }
+      did_work = did_work || worked;
     }
 
-    if (paused_) {
+    if (paused_.load(std::memory_order_acquire)) {
       pause_fence_.Signal();
       resume_fence_.Wait();
     }
 
-    if (!did_work) {
-      idle_loop_count++;
-    } else {
-      idle_loop_count = 0;
+    if (did_work) {
+      continue;
     }
     xe::threading::Wait(work_event_.get(), false);
   }
@@ -229,7 +250,7 @@ void XmaDecoder::Shutdown() {
     work_event_->Set();
   }
 
-  if (paused_) {
+  if (paused_.load(std::memory_order_acquire)) {
     Resume();
   }
 
@@ -342,6 +363,7 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
 
     // The context ID is a bit in the range of the entire context array.
     const uint32_t base_context_id = (r - XmaRegister::Context0Kick) * 32;
+    const uint32_t kicked_value = value;
     while (value) {
       const uint32_t context_id = base_context_id + std::countr_zero(value);
       auto& context = *contexts_[context_id];
@@ -353,6 +375,16 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
     }
     // Signal the decoder thread to start processing.
     work_event_->SetBoostPriority();
+    if (cvars::use_dedicated_xma_thread) {
+      // Block until the worker finishes, so the game sees updated context data.
+      uint32_t remaining = kicked_value;
+      while (remaining) {
+        const uint32_t context_id =
+            base_context_id + std::countr_zero(remaining);
+        contexts_[context_id]->WaitForWorkDone();
+        remaining &= remaining - 1;
+      }
+    }
   } else if (r >= XmaRegister::Context0Lock && r <= XmaRegister::Context9Lock) {
     // Context lock command.
     // This requests a lock by flagging the context.
@@ -362,11 +394,10 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
       const uint32_t context_id = base_context_id + std::countr_zero(value);
       auto& context = *contexts_[context_id];
       context.Disable();
+      // Ensure the worker isn't mid-processing this context.
+      context.Block(false);
       value &= value - 1;
     }
-
-    // Signal the decoder thread to start processing.
-    // work_event_->Set();
   } else if (r >= XmaRegister::Context0Clear &&
              r <= XmaRegister::Context9Clear) {
     // Context clear command.
@@ -400,19 +431,17 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
 }
 
 void XmaDecoder::Pause() {
-  if (paused_) {
+  if (paused_.exchange(true, std::memory_order_acq_rel)) {
     return;
   }
-  paused_ = true;
 
   pause_fence_.Wait();
 }
 
 void XmaDecoder::Resume() {
-  if (!paused_) {
+  if (!paused_.exchange(false, std::memory_order_acq_rel)) {
     return;
   }
-  paused_ = false;
 
   resume_fence_.Signal();
 }

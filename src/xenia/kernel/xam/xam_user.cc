@@ -7,6 +7,8 @@
  ******************************************************************************
  */
 
+#include <ranges>
+
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
@@ -90,8 +92,6 @@ dword_result_t XamUserGetIndexFromXUID_entry(qword_t xuid, dword_t flags,
 DECLARE_XAM_EXPORT1(XamUserGetIndexFromXUID, kUserProfiles, kImplemented);
 
 dword_result_t XamUserGetSigninState_entry(dword_t user_index) {
-  // Yield, as some games spam this.
-  xe::threading::MaybeYield();
   uint32_t signin_state = 0;
   if (user_index >= XUserMaxUserCount) {
     return signin_state;
@@ -358,6 +358,8 @@ dword_result_t XamUserWriteProfileSettings_entry(
   }
 
   auto run = [=](uint32_t& extended_error, uint32_t& length) {
+    bool was_avatar_setting_changed = false;
+    const uint8_t user_index_bit = (1 << user_index) & 0xF;
     // Update and save settings.
     const auto& user_profile =
         kernel_state()->xam_state()->GetUserProfile(user_index);
@@ -371,6 +373,11 @@ dword_result_t XamUserWriteProfileSettings_entry(
 
     for (uint32_t n = 0; n < setting_count; ++n) {
       const UserSetting setting = UserSetting(&settings[n]);
+      if (setting.get_setting_id() ==
+          static_cast<uint32_t>(
+              UserSettingId::XPROFILE_GAMERCARD_AVATAR_INFO_1)) {
+        was_avatar_setting_changed = true;
+      }
 
       if (!setting.is_valid_type()) {
         continue;
@@ -378,6 +385,13 @@ dword_result_t XamUserWriteProfileSettings_entry(
 
       kernel_state()->xam_state()->user_tracker()->UpsertSetting(
           user_profile->xuid(), title_id, &setting);
+    }
+
+    kernel_state()->BroadcastNotification(
+        kXNotificationSystemProfileSettingChanged, user_index_bit);
+    if (was_avatar_setting_changed) {
+      kernel_state()->BroadcastNotification(kXNotificationSystemAvatarChanged,
+                                            user_index_bit);
     }
 
     extended_error = X_HRESULT_FROM_WIN32(X_STATUS_SUCCESS);
@@ -630,20 +644,26 @@ dword_result_t XamUserCreateAchievementEnumerator_entry(
       kernel_state()->achievement_manager()->GetTitleAchievements(
           requester_xuid, title_id_);
 
-  if (!user_title_achievements.empty()) {
-    for (const auto& entry : user_title_achievements) {
-      auto unlock_time = X_FILETIME();
-      if (entry.IsUnlocked() && entry.unlock_time.is_valid()) {
-        unlock_time = entry.unlock_time;
-      }
+  const auto requested_achievements = user_title_achievements |
+                                      std::views::drop(offset) |
+                                      std::views::take(count);
 
-      auto item = AchievementDetails(
-          entry.achievement_id, entry.achievement_name.c_str(),
-          entry.unlocked_description.c_str(), entry.locked_description.c_str(),
-          entry.image_id, entry.gamerscore, unlock_time, entry.flags);
+  if (requested_achievements.empty()) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
 
-      e->AppendItem(item);
+  for (const auto& entry : requested_achievements) {
+    auto unlock_time = X_FILETIME();
+    if (entry.IsUnlocked() && entry.unlock_time.is_valid()) {
+      unlock_time = entry.unlock_time;
     }
+
+    auto item = AchievementDetails(
+        entry.achievement_id, entry.achievement_name.c_str(),
+        entry.unlocked_description.c_str(), entry.locked_description.c_str(),
+        entry.image_id, entry.gamerscore, unlock_time, entry.flags);
+
+    e->AppendItem(item);
   }
 
   *handle_ptr = e->handle();

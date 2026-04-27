@@ -139,17 +139,6 @@ void XmaContextFake::Enable() {
   set_is_enabled(true);
 }
 
-bool XmaContextFake::Block(bool poll) {
-  if (!lock_.try_lock()) {
-    if (poll) {
-      return false;
-    }
-    lock_.lock();
-  }
-  lock_.unlock();
-  return true;
-}
-
 void XmaContextFake::Clear() {
   std::lock_guard<xe_mutex> lock(lock_);
   XELOGAPU("XmaContextFake: reset context {}", id());
@@ -179,7 +168,7 @@ void XmaContextFake::Disable() {
 void XmaContextFake::Release() {
   // Lock it in case the decoder thread is working on it now.
   std::lock_guard<xe_mutex> lock(lock_);
-  assert_true(is_allocated_ == true);
+  assert_true(is_allocated());
 
   set_is_allocated(false);
   auto context_ptr = memory()->TranslateVirtual(guest_ptr());

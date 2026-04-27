@@ -40,7 +40,7 @@ DEFINE_uint32(
     "Config");
 
 namespace config {
-std::string config_name = "xenia-edge.config.toml";
+std::string config_name = "xenios.config.toml";
 std::filesystem::path config_folder;
 std::filesystem::path config_path;
 std::string game_config_suffix = ".config.toml";
@@ -48,6 +48,10 @@ std::function<void()> config_saved_callback;
 
 std::filesystem::path GetGameConfigPath(const std::string& title_id) {
   return config_folder / "config" / (title_id + game_config_suffix);
+}
+
+std::filesystem::path GetBundledDataPath(const std::string& subdirectory) {
+  return xe::filesystem::GetExecutablePath().parent_path() / subdirectory;
 }
 
 bool sortCvar(cvar::IConfigVar* a, cvar::IConfigVar* b) {

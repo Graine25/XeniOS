@@ -450,6 +450,26 @@ TextureGuestLayout GetGuestTextureLayout(
 
   return layout;
 }
+
+void GetTextureTotalSize(xenos::DataDimension dimension,
+                         uint32_t base_pitch_texels_div_32,
+                         uint32_t width_texels, uint32_t height_texels,
+                         uint32_t depth_or_array_size, bool is_tiled,
+                         xenos::TextureFormat format, uint32_t mip_max_level,
+                         bool has_packed_mips, uint32_t* base_size_out,
+                         uint32_t* mip_size_out) {
+  TextureGuestLayout layout =
+      GetGuestTextureLayout(dimension, base_pitch_texels_div_32, width_texels,
+                            height_texels, depth_or_array_size, is_tiled,
+                            format, has_packed_mips, true, mip_max_level);
+  if (base_size_out) {
+    *base_size_out = layout.base.level_data_extent_bytes;
+  }
+  if (mip_size_out) {
+    *mip_size_out = layout.mips_total_extent_bytes;
+  }
+}
+
 XE_NOINLINE
 XE_NOALIAS
 int32_t GetTiledOffset2D(int32_t x, int32_t y, uint32_t pitch,

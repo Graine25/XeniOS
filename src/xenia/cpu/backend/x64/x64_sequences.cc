@@ -29,6 +29,7 @@
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
 #include "xenia/base/threading.h"
 #include "xenia/cpu/backend/x64/x64_emitter.h"
 #include "xenia/cpu/backend/x64/x64_op.h"
@@ -71,7 +72,10 @@ using namespace xe::cpu::hir;
 using xe::cpu::hir::Instr;
 
 typedef bool (*SequenceSelectFn)(X64Emitter&, const Instr*, InstrKeyValue ikey);
-std::unordered_map<uint32_t, SequenceSelectFn> sequence_table;
+std::unordered_map<uint32_t, SequenceSelectFn>& SequenceTable() {
+  static auto* table = new std::unordered_map<uint32_t, SequenceSelectFn>();
+  return *table;
+}
 
 // ============================================================================
 // OPCODE_COMMENT
@@ -3184,12 +3188,22 @@ struct CNTLZ_I32 : Sequence<CNTLZ_I32, I<OPCODE_CNTLZ, I8Op, I32Op>> {
       Xbyak::Label end;
       e.inLocalLabel();
 
+      // macOS: avoid 64-bit register size mismatch in Xbyak on some hosts.
+#if XE_PLATFORM_MAC
+      e.bsr(e.eax, i.src1);  // ZF set if i.src1 is 0
+#else
       e.bsr(e.rax, i.src1);  // ZF set if i.src1 is 0
+#endif
       e.mov(i.dest, 0x20);
       e.jz(end);
 
+#if XE_PLATFORM_MAC
+      e.xor_(e.eax, 0x1F);
+      e.mov(i.dest, e.al);
+#else
       e.xor_(e.rax, 0x1F);
       e.mov(i.dest, e.rax);
+#endif
 
       e.L(end);
       e.outLocalLabel();
@@ -3208,8 +3222,14 @@ struct CNTLZ_I64 : Sequence<CNTLZ_I64, I<OPCODE_CNTLZ, I8Op, I64Op>> {
       e.mov(i.dest, 0x40);
       e.jz(end);
 
+      // macOS: avoid 64-bit register size mismatch in Xbyak on some hosts.
+#if XE_PLATFORM_MAC
+      e.xor_(e.eax, 0x3F);
+      e.mov(i.dest, e.al);
+#else
       e.xor_(e.rax, 0x3F);
       e.mov(i.dest, e.rax);
+#endif
 
       e.L(end);
       e.outLocalLabel();
@@ -3305,8 +3325,9 @@ bool SelectSequence(X64Emitter* e, const Instr* i, const Instr** new_tail) {
   } else {
     const InstrKey key(i);
 
-    auto it = sequence_table.find(key);
-    if (it != sequence_table.end()) {
+    auto& table = SequenceTable();
+    auto it = table.find(key);
+    if (it != table.end()) {
       if (it->second(*e, i, InstrKey(i))) {
         *new_tail = i->next;
         return true;

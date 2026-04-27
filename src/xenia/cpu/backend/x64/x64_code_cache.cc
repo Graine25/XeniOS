@@ -38,7 +38,7 @@ X64CodeCache::X64CodeCache() = default;
 
 X64CodeCache::~X64CodeCache() {
   if (indirection_table_base_) {
-    xe::memory::DeallocFixed(indirection_table_base_, 0,
+    xe::memory::DeallocFixed(indirection_table_base_, kIndirectionTableSize,
                              xe::memory::DeallocationType::kRelease);
   }
 
@@ -59,19 +59,6 @@ X64CodeCache::~X64CodeCache() {
 }
 
 bool X64CodeCache::Initialize() {
-  indirection_table_base_ = reinterpret_cast<uint8_t*>(xe::memory::AllocFixed(
-      reinterpret_cast<void*>(kIndirectionTableBase), kIndirectionTableSize,
-      xe::memory::AllocationType::kReserve,
-      xe::memory::PageAccess::kReadWrite));
-  if (!indirection_table_base_) {
-    XELOGE("Unable to allocate code cache indirection table");
-    XELOGE(
-        "This is likely because the {:X}-{:X} range is in use by some other "
-        "system DLL",
-        static_cast<uint64_t>(kIndirectionTableBase),
-        kIndirectionTableBase + kIndirectionTableSize);
-  }
-
   // Create mmap file. This allows us to share the code cache with the debugger.
   file_name_ = fmt::format("xenia_code_cache_{}", Clock::QueryHostTickCount());
   mapping_ = xe::memory::CreateFileMappingHandle(
@@ -84,6 +71,24 @@ bool X64CodeCache::Initialize() {
 
   // Map generated code region into the file. Pages are committed as required.
   if (xe::memory::IsWritableExecutableMemoryPreferred()) {
+#if XE_PLATFORM_MAC
+    // On macOS, MAP_JIT is required for executable mappings on some systems.
+    generated_code_execute_base_ =
+        reinterpret_cast<uint8_t*>(xe::memory::AllocFixed(
+            reinterpret_cast<void*>(kGeneratedCodeExecuteBase),
+            kGeneratedCodeSize, xe::memory::AllocationType::kReserveCommit,
+            xe::memory::PageAccess::kExecuteReadWrite));
+    generated_code_write_base_ = generated_code_execute_base_;
+    if (!generated_code_execute_base_ || !generated_code_write_base_) {
+      XELOGE("Unable to allocate code cache generated code storage");
+      XELOGE(
+          "This is likely because the {:X}-{:X} range is in use by some other "
+          "system DLL",
+          uint64_t(kGeneratedCodeExecuteBase),
+          uint64_t(kGeneratedCodeExecuteBase + kGeneratedCodeSize));
+      return false;
+    }
+#else
     generated_code_execute_base_ =
         reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
             mapping_, reinterpret_cast<void*>(kGeneratedCodeExecuteBase),
@@ -98,6 +103,7 @@ bool X64CodeCache::Initialize() {
           uint64_t(kGeneratedCodeExecuteBase + kGeneratedCodeSize));
       return false;
     }
+#endif
   } else {
     generated_code_execute_base_ =
         reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
@@ -122,6 +128,42 @@ bool X64CodeCache::Initialize() {
 
   // Preallocate the function map to a large, reasonable size.
   generated_code_map_.reserve(kMaximumFunctionCount);
+
+  indirection_table_base_ = reinterpret_cast<uint8_t*>(xe::memory::AllocFixed(
+      reinterpret_cast<void*>(kIndirectionTableBase), kIndirectionTableSize,
+      xe::memory::AllocationType::kReserve,
+      xe::memory::PageAccess::kReadWrite));
+#if XE_PLATFORM_MAC
+  if (!indirection_table_base_) {
+    XELOGW(
+        "Fixed address mapping for indirection table failed, trying "
+        "OS-chosen address");
+    indirection_table_base_ = reinterpret_cast<uint8_t*>(xe::memory::AllocFixed(
+        nullptr, kIndirectionTableSize, xe::memory::AllocationType::kReserve,
+        xe::memory::PageAccess::kReadWrite));
+  }
+  if (!indirection_table_base_) {
+    XELOGE("Unable to allocate code cache indirection table");
+    XELOGE(
+        "This is likely because the {:X}-{:X} range is in use by some other "
+        "system DLL",
+        static_cast<uint64_t>(kIndirectionTableBase),
+        kIndirectionTableBase + kIndirectionTableSize);
+  } else {
+    indirection_table_base_bias_ =
+        reinterpret_cast<uintptr_t>(indirection_table_base_) -
+        kIndirectionTableBase;
+  }
+#else
+  if (!indirection_table_base_) {
+    XELOGE("Unable to allocate code cache indirection table");
+    XELOGE(
+        "This is likely because the {:X}-{:X} range is in use by some other "
+        "system DLL",
+        static_cast<uint64_t>(kIndirectionTableBase),
+        kIndirectionTableBase + kIndirectionTableSize);
+  }
+#endif
 
   return true;
 }
@@ -336,10 +378,18 @@ uint32_t X64CodeCache::PlaceData(const void* data, size_t length) {
 }
 
 GuestFunction* X64CodeCache::LookupFunction(uint64_t host_pc) {
-  uint32_t key = uint32_t(host_pc - kGeneratedCodeExecuteBase);
+  if (generated_code_map_.empty()) {
+    return nullptr;
+  }
+  const uint64_t code_base = kGeneratedCodeExecuteBase;
+  const uint64_t code_end = code_base + kGeneratedCodeSize;
+  if (host_pc < code_base || host_pc >= code_end) {
+    return nullptr;
+  }
+  uint32_t key = uint32_t(host_pc - code_base);
   void* fn_entry = std::bsearch(
       &key, generated_code_map_.data(), generated_code_map_.size(),
-      sizeof(std::pair<uint32_t, Function*>),
+      sizeof(generated_code_map_[0]),
       [](const void* key_ptr, const void* element_ptr) {
         auto key = *reinterpret_cast<const uint32_t*>(key_ptr);
         auto element =

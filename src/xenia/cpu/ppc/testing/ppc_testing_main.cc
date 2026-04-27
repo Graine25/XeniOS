@@ -28,11 +28,13 @@
 
 #if XE_ARCH_AMD64
 #include "xenia/cpu/backend/x64/x64_backend.h"
+#elif XE_ARCH_ARM64
+#include "xenia/cpu/backend/a64/a64_backend.h"
 #endif  // XE_ARCH
 
 #if XE_COMPILER_MSVC
 #include "xenia/base/platform_win.h"
-#else
+#elif !XE_PLATFORM_APPLE
 #include <sys/wait.h>
 #include <unistd.h>
 #endif  // XE_COMPILER_MSVC
@@ -234,12 +236,11 @@ class TestRunner {
   }
 
   bool Setup(TestSuite& suite) {
-    // Reset thread state first so it can properly deinitialize with the
-    // existing processor before we destroy the processor.
-    thread_state_.reset();
-
     // Reset memory.
     memory_->Reset();
+
+    // Release prior thread state before resetting the processor/backend.
+    thread_state_.reset();
 
     std::unique_ptr<xe::cpu::backend::Backend> backend;
     if (!backend) {
@@ -247,11 +248,17 @@ class TestRunner {
       if (cvars::cpu == "x64") {
         backend.reset(new xe::cpu::backend::x64::X64Backend());
       }
+#elif XE_ARCH_ARM64
+      if (cvars::cpu == "a64") {
+        backend.reset(new xe::cpu::backend::a64::A64Backend());
+      }
 #endif  // XE_ARCH
       if (cvars::cpu == "any") {
         if (!backend) {
 #if XE_ARCH_AMD64
           backend.reset(new xe::cpu::backend::x64::X64Backend());
+#elif XE_ARCH_ARM64
+          backend.reset(new xe::cpu::backend::a64::A64Backend());
 #endif  // XE_ARCH
         }
       }
@@ -259,7 +266,14 @@ class TestRunner {
 
     // Setup a fresh processor.
     processor_.reset(new Processor(memory_.get(), nullptr));
-    processor_->Setup(std::move(backend));
+    if (!backend) {
+      XELOGE("No CPU backend available for tests");
+      return false;
+    }
+    if (!processor_->Setup(std::move(backend))) {
+      XELOGE("Failed to initialize processor backend");
+      return false;
+    }
     processor_->set_debug_info_flags(DebugInfoFlags::kDebugInfoAll);
 
     // Load the binary module.
@@ -450,7 +464,7 @@ int filter(unsigned int code) {
 }
 #endif  // XE_COMPILER_MSVC
 
-#if !XE_COMPILER_MSVC
+#if !XE_COMPILER_MSVC && !XE_PLATFORM_APPLE
 // Run test in isolated child process to catch crashes
 enum class TestResult {
   kPassed,
@@ -546,7 +560,7 @@ TestResult RunTestInChildProcess(TestSuite& test_suite, TestCase& test_case) {
   fflush(stderr);
   return TestResult::kFailed;
 }
-#endif  // !XE_COMPILER_MSVC
+#endif  // !XE_COMPILER_MSVC && !XE_PLATFORM_APPLE
 
 void ProtectedRunTest(TestSuite& test_suite, TestRunner& runner,
                       TestCase& test_case, int& failed_count,
@@ -575,6 +589,24 @@ void ProtectedRunTest(TestSuite& test_suite, TestRunner& runner,
     fflush(stderr);
     ++failed_count;
   }
+#elif XE_PLATFORM_APPLE
+  fprintf(stdout, "  - %s\n", test_case.name.c_str());
+  fflush(stdout);
+  if (!runner.Setup(test_suite)) {
+    fprintf(stderr, "  [%s] FAILED SETUP\n", test_case.name.c_str());
+    fflush(stderr);
+    ++failed_count;
+    return;
+  }
+  if (runner.Run(test_case)) {
+    ++passed_count;
+    fprintf(stdout, "    PASS\n");
+    fflush(stdout);
+  } else {
+    fprintf(stderr, "  [%s] FAILED\n", test_case.name.c_str());
+    fflush(stderr);
+    ++failed_count;
+  }
 #else
   // Use fork to isolate crashes on POSIX systems
   // Note: runner parameter is not used on POSIX
@@ -592,7 +624,7 @@ void ProtectedRunTest(TestSuite& test_suite, TestRunner& runner,
 #endif  // XE_COMPILER_MSVC
 }
 
-bool RunTests(const std::string_view test_name) {
+bool RunTests(const std::vector<std::string>& test_names) {
   int result_code = 1;
   int failed_count = 0;
   int passed_count = 0;
@@ -606,6 +638,10 @@ bool RunTests(const std::string_view test_name) {
   if (!skip_list.empty()) {
     XELOGI("Loaded skip list with {} test cases to skip.", skip_list.size());
   }
+
+  // Build a set of requested test names for fast lookup
+  std::unordered_set<std::string> test_name_filter(test_names.begin(),
+                                                   test_names.end());
 
   auto test_path_root = cvars::test_path;
   std::vector<std::filesystem::path> test_files;
@@ -623,7 +659,8 @@ bool RunTests(const std::string_view test_name) {
   bool load_failed = false;
   for (auto& test_path : test_files) {
     TestSuite test_suite(test_path);
-    if (!test_name.empty() && test_suite.name() != test_name) {
+    if (!test_name_filter.empty() &&
+        test_name_filter.find(test_suite.name()) == test_name_filter.end()) {
       continue;
     }
     if (!test_suite.Load()) {
@@ -656,10 +693,10 @@ bool RunTests(const std::string_view test_name) {
     XELOGI("{} test cases skipped based on skip list.", skipped_count);
   }
 
-#if XE_COMPILER_MSVC
+#if XE_COMPILER_MSVC || XE_PLATFORM_APPLE
   // On Windows, use a single shared test runner
   TestRunner runner;
-  // Run tests serially on Windows
+  // Run tests serially on Windows/macOS
   for (auto& [test_suite, test_case] : all_tests) {
     ProtectedRunTest(*test_suite, runner, *test_case, failed_count,
                      passed_count);
@@ -721,12 +758,25 @@ bool RunTests(const std::string_view test_name) {
 }
 
 int main(const std::vector<std::string>& args) {
-  return RunTests(cvars::test_name) ? 0 : 1;
+  std::vector<std::string> test_names;
+  // Collect test names from all positional arguments.
+  // argv[0] is the program name, skip it. Also skip --flag arguments
+  // since those are handled by cvar parsing.
+  for (size_t i = 1; i < args.size(); ++i) {
+    if (!args[i].empty() && args[i][0] != '-') {
+      test_names.push_back(args[i]);
+    }
+  }
+  // Fall back to --test_name flag if no positional args given
+  if (test_names.empty() && !cvars::test_name.empty()) {
+    test_names.push_back(cvars::test_name);
+  }
+  return RunTests(test_names) ? 0 : 1;
 }
 
 }  // namespace test
 }  // namespace cpu
 }  // namespace xe
 
-XE_DEFINE_CONSOLE_APP("xenia-cpu-ppc-test", xe::cpu::test::main, "[test name]",
-                      "test_name");
+XE_DEFINE_CONSOLE_APP("xenia-cpu-ppc-test", xe::cpu::test::main,
+                      "[test names...]", "test_name");

@@ -92,12 +92,19 @@ X64Emitter::X64Emitter(X64Backend* backend, XbyakAllocator* allocator)
       backend_(backend),
       code_cache_(backend->code_cache()),
       allocator_(allocator) {
+#if XE_PLATFORM_MAC
   if (!cpu_.has(Xbyak::util::Cpu::tAVX)) {
-    xe::FatalError(
-        "Your CPU does not support AVX, which is required by Xenia. See the "
-        "FAQ for system requirements at https://xenia.jp");
-    return;
+    XELOGW(
+        "This CPU does not support AVX. Continuing anyway (performance and "
+        "compatibility may be reduced).");
   }
+#else
+  if (!cpu_.has(Xbyak::util::Cpu::tAVX)) {
+    XELOGW(
+        "Your CPU does not support AVX, which is required by Xenia. See the "
+        "FAQ for system requirements at https://xenios.jp/faq");
+  }
+#endif
 
   feature_flags_ = amd64::GetFeatureFlags();
 
@@ -739,7 +746,19 @@ void X64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
     // The target dword will either contain the address of the generated code
     // or a thunk to ResolveAddress.
     mov(ebx, function->address());
+#if XE_PLATFORM_MAC
+    const uintptr_t indirection_bias =
+        code_cache_->indirection_table_base_bias();
+    if (indirection_bias) {
+      mov(rax, indirection_bias);
+      add(rax, rbx);
+      mov(eax, dword[rax]);
+    } else {
+      mov(eax, dword[ebx]);
+    }
+#else
     mov(eax, dword[ebx]);
+#endif
   } else {
     // Old-style resolve.
     // Not too important because indirection table is almost always available.
@@ -783,7 +802,19 @@ void X64Emitter::CallIndirect(const hir::Instr* instr,
     if (reg.cvt32() != ebx) {
       mov(ebx, reg.cvt32());
     }
+#if XE_PLATFORM_MAC
+    const uintptr_t indirection_bias =
+        code_cache_->indirection_table_base_bias();
+    if (indirection_bias) {
+      mov(rax, indirection_bias);
+      add(rax, rbx);
+      mov(eax, dword[rax]);
+    } else {
+      mov(eax, dword[ebx]);
+    }
+#else
     mov(eax, dword[ebx]);
+#endif
   } else {
     // Old-style resolve.
     // Not too important because indirection table is almost always available.
@@ -1165,8 +1196,8 @@ static const vec128_t xmm_consts[] = {
         */
     vec128q(0x7fe000007fe000ULL),
 
-    /* XMMF16PackLCPI0*/
-    vec128i(0x8000000),
+    /* XMMF16PackLCPI0 (bias + round-half-down) */
+    vec128i(0x8000FFF),
     /*XMMF16PackLCPI2*/
     vec128i(0x47ffe000),
     /*XMMF16PackLCPI3*/
@@ -1298,7 +1329,8 @@ uintptr_t X64Emitter::PlaceConstData() {
 }
 
 void X64Emitter::FreeConstData(uintptr_t data) {
-  memory::DeallocFixed(reinterpret_cast<void*>(data), 0,
+  memory::DeallocFixed(reinterpret_cast<void*>(data),
+                       xe::round_up(kConstDataSize, memory::page_size()),
                        memory::DeallocationType::kRelease);
 }
 

@@ -28,11 +28,20 @@
 #include "xenia/base/literals.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/mapped_memory.h"
+#include "xenia/base/memory.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 #include "xenia/base/system.h"
+#if XE_PLATFORM_IOS
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 #include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/backend/null_backend.h"
+#if XE_ARCH_ARM64
+#include "xenia/cpu/backend/a64/a64_backend.h"
+#endif  // XE_ARCH_ARM64
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/thread_state.h"
 #include "xenia/gpu/command_processor.h"
@@ -62,11 +71,46 @@
 #include "xenia/vfs/devices/host_path_device.h"
 #include "xenia/vfs/devices/null_device.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
+#include "xenia/vfs/entry.h"
+#include "xenia/vfs/file.h"
 #include "xenia/vfs/virtual_file_system.h"
 
 #if XE_ARCH_AMD64
 #include "xenia/cpu/backend/x64/x64_backend.h"
 #endif  // XE_ARCH
+
+#if XE_PLATFORM_IOS
+namespace {
+
+extern "C" int csops(pid_t pid, unsigned int ops, void* useraddr,
+                     size_t usersize);
+
+#ifndef CS_OPS_STATUS
+#define CS_OPS_STATUS 0
+#endif
+#ifndef CS_DEBUGGED
+#define CS_DEBUGGED 0x10000000
+#endif
+
+bool IsIOSCsDebugged() {
+  int flags = 0;
+  return !csops(getpid(), CS_OPS_STATUS, &flags, sizeof(flags)) &&
+         (flags & CS_DEBUGGED);
+}
+
+bool CanMapIOSExecutePage() {
+  const size_t test_size = xe::memory::page_size();
+  void* test = mmap(nullptr, test_size, PROT_READ | PROT_EXEC,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (test == MAP_FAILED) {
+    return false;
+  }
+  munmap(test, test_size);
+  return true;
+}
+
+}  // namespace
+#endif  // XE_PLATFORM_IOS
 
 DEFINE_double(time_scalar, 1.0,
               "Scalar used to speed or slow time (1x, 2x, 1/2x, etc).",
@@ -98,6 +142,10 @@ DEFINE_bool(allow_game_relative_writes, false,
 DECLARE_string(user_language);
 
 DECLARE_bool(allow_plugins);
+
+DECLARE_bool(mount_scratch);
+DECLARE_bool(mount_cache);
+DECLARE_bool(force_mount_devkit);
 
 DEFINE_int32(priority_class, 0,
              "Forces Xenia to use different process priority than default one. "
@@ -157,9 +205,7 @@ Emulator::Emulator(const std::filesystem::path& command_line,
              "physical games from your Xbox 360 console.\n\nWould you like "
              "to open it?",
              L"Xenia", MB_YESNO | MB_ICONQUESTION) == IDYES)) {
-      LaunchWebBrowser(
-          "https://github.com/xenia-canary/xenia-canary/wiki/"
-          "Quickstart#how-to-rip-games");
+      LaunchWebBrowser("https://xenios.jp/docs");
     }
     SetPersistentEmulatorFlags(persistent_flags |
                                EmulatorFlagDisclaimerAcknowledged);
@@ -167,7 +213,18 @@ Emulator::Emulator(const std::filesystem::path& command_line,
 #endif
 }
 
-Emulator::~Emulator() {
+Emulator::~Emulator() { Shutdown(); }
+
+void Emulator::Shutdown() {
+  XELOGI("Emulator::Shutdown: starting teardown");
+
+  // During relaunch, notify listeners before teardown so they can disconnect
+  // UI resources while subsystems are still alive. Skip during normal
+  // destructor — the UI loop may not be running.
+  if (relaunching_) {
+    on_before_shutdown();
+  }
+
   // Note that we delete things in the reverse order they were initialized.
 
   // Give the systems time to shutdown before we delete them.
@@ -178,19 +235,39 @@ Emulator::~Emulator() {
     audio_system_->Shutdown();
   }
 
-  input_system_.reset();
+  main_thread_ = nullptr;
+
+  // Keep input_system_ alive across relaunch — it's bound to the persistent
+  // window and SDL requires init/quit on the same thread.
+  if (!relaunching_) {
+    input_system_.reset();
+  }
   graphics_system_.reset();
   audio_system_.reset();
   audio_media_player_.reset();
 
   kernel_state_.reset();
   file_system_.reset();
+  patcher_.reset();
+  plugin_loader_.reset();
 
   processor_.reset();
-
   export_resolver_.reset();
+  memory_.reset();
 
   ExceptionHandler::Uninstall(Emulator::ExceptionCallbackThunk, this);
+
+  title_id_ = std::nullopt;
+  title_name_.clear();
+  title_version_.clear();
+  game_info_database_.reset();
+  paused_ = false;
+
+  XELOGI("Emulator::Shutdown: teardown complete");
+}
+
+uint32_t Emulator::main_thread_id() {
+  return main_thread_ ? main_thread_->thread_id() : 0;
 }
 
 X_STATUS Emulator::Setup(
@@ -202,10 +279,17 @@ X_STATUS Emulator::Setup(
         graphics_system_factory,
     std::function<std::vector<std::unique_ptr<hid::InputDriver>>(ui::Window*)>
         input_driver_factory) {
-  X_STATUS result = X_STATUS_UNSUCCESSFUL;
+  X_STATUS result = X_STATUS_SUCCESS;
 
-  display_window_ = display_window;
-  imgui_drawer_ = imgui_drawer;
+  // Store parameters for reuse across Shutdown/Setup cycles.
+  // Only overwrite if non-null so re-calls after Shutdown keep prior values.
+  if (display_window) display_window_ = display_window;
+  if (imgui_drawer) imgui_drawer_ = imgui_drawer;
+  require_cpu_backend_ = require_cpu_backend;
+  if (audio_system_factory) audio_system_factory_ = audio_system_factory;
+  if (graphics_system_factory)
+    graphics_system_factory_ = graphics_system_factory;
+  if (input_driver_factory) input_driver_factory_ = input_driver_factory;
 
   // Initialize clock.
   // 360 uses a 50MHz clock.
@@ -224,7 +308,7 @@ X_STATUS Emulator::Setup(
   memory_ = std::make_unique<Memory>();
   if (!memory_->Initialize()) {
     XELOGE("{}: Cannot initalize memory!", __func__);
-    return result;
+    return X_STATUS_UNSUCCESSFUL;
   }
 
   XELOGI("{}: Initializing Exports...", __func__);
@@ -232,20 +316,64 @@ X_STATUS Emulator::Setup(
   export_resolver_ = std::make_unique<xe::cpu::ExportResolver>();
 
   std::unique_ptr<xe::cpu::backend::Backend> backend;
+
+  // In profile-only UI mode, explicitly force the null backend to avoid
+  // requiring JIT / executable memory.
+  // Keep existing behavior for tooling flows that pass
+  // require_cpu_backend=false but still provide graphics / audio / input
+  // factories (for example trace tools), where a real CPU backend may still be
+  // expected.
+  const bool profile_only_mode =
+      !require_cpu_backend_ && !audio_system_factory_ &&
+      !graphics_system_factory_ && !input_driver_factory_;
+  if (profile_only_mode) {
+    backend = std::make_unique<xe::cpu::backend::NullBackend>();
+  } else {
+    // On iOS, probe whether JIT (executable memory) is available at runtime.
+    // We use the dual-mapping (split W^X via vm_remap) approach, not MAP_JIT.
+#if XE_PLATFORM_IOS
+    const bool cs_debugged = IsIOSCsDebugged();
+    const bool can_map_exec = CanMapIOSExecutePage();
+    // Use executable-memory probing as the authoritative runtime capability
+    // signal instead of hard-coding OS-version policy.
+    const bool jit_available = can_map_exec;
+    if (!jit_available) {
+      XELOGW(
+          "JIT is not available. Games will not run.\n"
+          "CS_DEBUGGED={} mmap(PROT_EXEC)={}\n"
+          "Enable JIT via StikDebug, AltJIT, or SideJITServer.\n"
+          "If installed via Xcode, launch with the debugger attached.",
+          cs_debugged, can_map_exec);
+    }
+#else
+    constexpr bool jit_available = true;
+#endif
+
 #if XE_ARCH_AMD64
-  if (cvars::cpu == "x64") {
-    backend.reset(new xe::cpu::backend::x64::X64Backend());
-  }
-#endif  // XE_ARCH
-  if (cvars::cpu == "any") {
-    if (!backend) {
-#if XE_ARCH_AMD64
+    if (jit_available && cvars::cpu == "x64") {
       backend.reset(new xe::cpu::backend::x64::X64Backend());
-#endif  // XE_ARCH
+    }
+#endif  // XE_ARCH_AMD64
+#if XE_ARCH_ARM64
+    if (jit_available && cvars::cpu == "a64") {
+      backend.reset(new xe::cpu::backend::a64::A64Backend());
+    }
+#endif  // XE_ARCH_ARM64
+    if (jit_available && cvars::cpu == "any") {
+      if (!backend) {
+#if XE_ARCH_AMD64
+        backend.reset(new xe::cpu::backend::x64::X64Backend());
+#endif  // XE_ARCH_AMD64
+#if XE_ARCH_ARM64
+        if (!backend) {
+          backend.reset(new xe::cpu::backend::a64::A64Backend());
+        }
+#endif  // XE_ARCH_ARM64
+      }
     }
   }
-  if (!backend && !require_cpu_backend) {
-    backend.reset(new xe::cpu::backend::NullBackend());
+  if (!backend && !require_cpu_backend_) {
+    backend = std::make_unique<xe::cpu::backend::NullBackend>();
   }
 
   XELOGI("{}: Initializing Processor...", __func__);
@@ -258,9 +386,9 @@ X_STATUS Emulator::Setup(
   }
 
   // Initialize the APU (optional for UI process).
-  if (audio_system_factory) {
+  if (audio_system_factory_) {
     XELOGI("{}: Initializing Audio...", __func__);
-    audio_system_ = audio_system_factory(processor_.get());
+    audio_system_ = audio_system_factory_(processor_.get());
     if (!audio_system_) {
       XELOGE("{}: Cannot initalize audio_system!", __func__);
       return X_STATUS_NOT_IMPLEMENTED;
@@ -268,32 +396,35 @@ X_STATUS Emulator::Setup(
   }
 
   // Initialize the GPU (optional for UI process).
-  if (graphics_system_factory) {
+  if (graphics_system_factory_) {
     XELOGI("{}: Initializing Graphics...", __func__);
-    graphics_system_ = graphics_system_factory();
+    graphics_system_ = graphics_system_factory_();
     if (!graphics_system_) {
       XELOGE("{}: Cannot initalize graphics_system!", __func__);
       return X_STATUS_NOT_IMPLEMENTED;
     }
   }
 
-  XELOGI("{}: Initializing HID...", __func__);
-  // Initialize the HID.
-  input_system_ = std::make_unique<xe::hid::InputSystem>(display_window_);
+  // Input system persists across relaunch — SDL requires init/quit on the
+  // same thread.
   if (!input_system_) {
-    XELOGE("{}: Cannot initalize input_system!", __func__);
-    return X_STATUS_NOT_IMPLEMENTED;
-  }
-  if (input_driver_factory) {
-    auto input_drivers = input_driver_factory(display_window_);
-    for (size_t i = 0; i < input_drivers.size(); ++i) {
-      input_system_->AddDriver(std::move(input_drivers[i]));
+    XELOGI("{}: Initializing HID...", __func__);
+    input_system_ = std::make_unique<xe::hid::InputSystem>(display_window_);
+    if (!input_system_) {
+      XELOGE("{}: Cannot initalize input_system!", __func__);
+      return X_STATUS_NOT_IMPLEMENTED;
     }
-  }
+    if (input_driver_factory_) {
+      auto input_drivers = input_driver_factory_(display_window_);
+      for (size_t i = 0; i < input_drivers.size(); ++i) {
+        input_system_->AddDriver(std::move(input_drivers[i]));
+      }
+    }
 
-  result = input_system_->Setup();
-  if (result) {
-    return result;
+    result = input_system_->Setup();
+    if (result) {
+      return result;
+    }
   }
 
   // Add inputSystem to UI (if imgui is enabled)
@@ -348,7 +479,7 @@ X_STATUS Emulator::Setup(
   // Initialize emulator fallback exception handling last.
   ExceptionHandler::Install(Emulator::ExceptionCallbackThunk, this);
 
-  return result;
+  return X_STATUS_SUCCESS;
 }
 
 X_STATUS Emulator::TerminateTitle() {
@@ -537,6 +668,11 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
 }
 
 X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
+  // Remember for relaunch fallback
+  if (!path.empty()) {
+    last_launch_path_ = path;
+  }
+
   X_STATUS mount_result = X_STATUS_SUCCESS;
 
   switch (GetFileSignature(path)) {
@@ -625,7 +761,9 @@ X_STATUS Emulator::LaunchDiscImage(const std::filesystem::path& path) {
 
 X_STATUS Emulator::LaunchDiscArchive(const std::filesystem::path& path) {
   std::string module_path = FindLaunchModule();
+  XELOGI("LaunchDiscArchive: FindLaunchModule returned '{}'", module_path);
   X_STATUS result = CompleteLaunch(path, module_path);
+  XELOGI("LaunchDiscArchive: CompleteLaunch returned {:08X}", result);
 
   if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
     return LaunchDefaultModule(path);
@@ -862,11 +1000,14 @@ X_STATUS Emulator::ProcessContentPackageHeader(
   installation_info.content_size_ = header->content_metadata.content_size;
   installation_info.installation_state_ = InstallState::pending;
 
-  // Store raw PNG data for Qt dialog
-  installation_info.icon_data_.assign(
-      header->content_metadata.title_thumbnail,
-      header->content_metadata.title_thumbnail +
-          header->content_metadata.title_thumbnail_size);
+  if (header->content_metadata.title_thumbnail_size > 0 &&
+      header->content_metadata.title_thumbnail_size <=
+          vfs::XContentMetadata::kThumbLengthV1) {
+    installation_info.icon_data_.assign(
+        header->content_metadata.title_thumbnail,
+        header->content_metadata.title_thumbnail +
+            header->content_metadata.title_thumbnail_size);
+  }
 
   return X_STATUS_SUCCESS;
 }
@@ -999,14 +1140,42 @@ X_STATUS Emulator::InstallContentPackage(
   return error_code;
 }
 
-X_STATUS Emulator::ExtractZarchivePackage(
-    const std::filesystem::path& path,
-    const std::filesystem::path& extract_dir) {
+X_STATUS Emulator::ExtractZarchivePackage(ZarchiveEntry& entry) {
+  const auto& path = entry.path_;
+  const auto& extract_dir = entry.data_installation_path_;
+
+  entry.installation_state_ = InstallState::preparing;
+
+  if (entry.cancelled_.load()) {
+    entry.installation_result_ = X_ERROR_CANCELLED;
+    entry.installation_error_message_ = "Cancelled";
+    entry.installation_state_ = InstallState::failed;
+    return X_ERROR_CANCELLED;
+  }
+
   std::unique_ptr<vfs::Device> device =
       std::make_unique<vfs::DiscZarchiveDevice>("", path);
   if (!device->Initialize()) {
     XELOGE("Failed to initialize device");
+    entry.installation_result_ = X_STATUS_INVALID_PARAMETER;
+    entry.installation_error_message_ = "Failed to initialize device";
+    entry.installation_state_ = InstallState::failed;
     return X_STATUS_INVALID_PARAMETER;
+  }
+
+  entry.content_size_ = 0;
+  auto* root = device->ResolvePath("/");
+  if (root) {
+    std::function<void(vfs::Entry*)> calc_size = [&](vfs::Entry* e) {
+      if (e->attributes() & vfs::kFileAttributeDirectory) {
+        for (auto& child : e->children()) {
+          calc_size(child.get());
+        }
+      } else {
+        entry.content_size_ += e->size();
+      }
+    };
+    calc_size(root);
   }
 
   if (std::filesystem::exists(extract_dir)) {
@@ -1016,22 +1185,104 @@ X_STATUS Emulator::ExtractZarchivePackage(
     std::error_code error_code;
     std::filesystem::create_directories(extract_dir, error_code);
     if (error_code) {
+      entry.installation_result_ = error_code.value();
+      entry.installation_error_message_ =
+          "Failed to create extraction directory";
+      entry.installation_state_ = InstallState::failed;
       return error_code.value();
     }
   }
 
-  uint64_t progress = 0;
-  return vfs::VirtualFileSystem::ExtractContentFiles(device.get(), extract_dir,
-                                                     progress);
+  entry.installation_state_ = InstallState::installing;
+
+  X_STATUS result = vfs::VirtualFileSystem::ExtractContentFiles(
+      device.get(), extract_dir, entry.currently_installed_size_,
+      [&entry]() { return entry.cancelled_.load(); });
+
+  if (entry.cancelled_.load()) {
+    // Clean up partial extraction
+    std::error_code ec;
+    std::filesystem::remove_all(extract_dir, ec);
+    entry.installation_result_ = X_ERROR_CANCELLED;
+    entry.installation_error_message_ = "Cancelled";
+    entry.installation_state_ = InstallState::failed;
+    return X_ERROR_CANCELLED;
+  }
+
+  if (result != X_STATUS_SUCCESS) {
+    entry.installation_result_ = result;
+    entry.installation_error_message_ = "Extraction failed";
+    entry.installation_state_ = InstallState::failed;
+    return result;
+  }
+
+  entry.installation_result_ = X_STATUS_SUCCESS;
+  entry.installation_state_ = InstallState::installed;
+  return X_STATUS_SUCCESS;
 }
 
-X_STATUS Emulator::CreateZarchivePackage(
-    const std::filesystem::path& inputDirectory,
-    const std::filesystem::path& outputFile) {
+X_STATUS Emulator::CreateZarchivePackage(ZarchiveEntry& entry) {
+  const auto& inputDirectory = entry.path_;
+  const auto& outputFile = entry.data_installation_path_;
+
+  entry.installation_state_ = InstallState::preparing;
+
+  if (entry.cancelled_.load()) {
+    entry.installation_result_ = X_ERROR_CANCELLED;
+    entry.installation_error_message_ = "Cancelled";
+    entry.installation_state_ = InstallState::failed;
+    return X_ERROR_CANCELLED;
+  }
+
+  // Mount STFS content via VFS to pack the real game files.
+  std::unique_ptr<vfs::Device> stfs_device;
+  if (!entry.stfs_path_.empty()) {
+    stfs_device =
+        vfs::XContentContainerDevice::CreateContentDevice("", entry.stfs_path_);
+    if (!stfs_device || !stfs_device->Initialize()) {
+      XELOGE("CreateZarchivePackage: Failed to mount STFS content at '{}'",
+             xe::path_to_utf8(entry.stfs_path_));
+      entry.installation_result_ = X_STATUS_UNSUCCESSFUL;
+      entry.installation_error_message_ = "Failed to mount STFS content";
+      entry.installation_state_ = InstallState::failed;
+      return X_STATUS_UNSUCCESSFUL;
+    }
+    XELOGI("CreateZarchivePackage: Mounted STFS content from '{}'",
+           xe::path_to_utf8(entry.stfs_path_));
+  }
+
+  std::error_code ec;
+  entry.content_size_ = 0;
+
+  if (stfs_device) {
+    auto* root = stfs_device->ResolvePath("/");
+    if (root) {
+      std::function<void(vfs::Entry*)> calc_size = [&](vfs::Entry* e) {
+        if (e->attributes() & vfs::kFileAttributeDirectory) {
+          for (auto& child : e->children()) {
+            calc_size(child.get());
+          }
+        } else {
+          entry.content_size_ += e->size();
+        }
+      };
+      calc_size(root);
+    }
+  } else {
+    for (auto const& dirEntry :
+         std::filesystem::recursive_directory_iterator(inputDirectory, ec)) {
+      if (dirEntry.is_regular_file() && dirEntry.path() != outputFile) {
+        entry.content_size_ += std::filesystem::file_size(dirEntry.path(), ec);
+      }
+    }
+  }
+
+  entry.installation_state_ = InstallState::installing;
+  entry.currently_installed_size_ = 0;
+
   std::vector<uint8_t> buffer;
   buffer.resize(64 * 1024);
 
-  std::error_code ec;
   PackContext packContext;
   packContext.outputFilePath = outputFile;
 
@@ -1055,66 +1306,180 @@ X_STATUS Emulator::CreateZarchivePackage(
       &packContext);
 
   if (packContext.hasError) {
+    entry.installation_result_ = X_STATUS_UNSUCCESSFUL;
+    entry.installation_error_message_ = "Failed to create output file";
+    entry.installation_state_ = InstallState::failed;
     return X_STATUS_UNSUCCESSFUL;
   }
 
-  for (auto const& dirEntry :
-       std::filesystem::recursive_directory_iterator(inputDirectory)) {
-    std::filesystem::path pathEntry =
-        std::filesystem::relative(dirEntry.path(), inputDirectory, ec);
+  auto cleanup_and_fail = [&](const std::string& message, X_STATUS status) {
+    entry.installation_error_message_ = message;
+    entry.installation_result_ = status;
+    std::filesystem::remove(outputFile, ec);
+    entry.installation_state_ = InstallState::failed;
+    return status;
+  };
 
-    if (ec) {
-      XELOGI("Failed to get relative path {}\n", pathEntry.string());
-      return X_STATUS_UNSUCCESSFUL;
+  if (stfs_device) {
+    // Pack from mounted STFS VFS device
+    auto* root = stfs_device->ResolvePath("/");
+    if (!root) {
+      return cleanup_and_fail("Failed to resolve STFS root",
+                              X_STATUS_UNSUCCESSFUL);
     }
 
-    if (dirEntry.is_directory()) {
-      if (!zWriter.MakeDir(pathEntry.generic_string().c_str(), false)) {
-        XELOGI("Failed to create directory {}\n", pathEntry.string());
+    std::function<X_STATUS(vfs::Entry*)> pack_entry =
+        [&](vfs::Entry* e) -> X_STATUS {
+      if (entry.cancelled_.load()) {
+        return X_ERROR_CANCELLED;
+      }
+
+      // Use forward slashes for zarchive paths, skip leading separator
+      std::string entry_path = utf8::fix_path_separators(e->path(), '/');
+      if (!entry_path.empty() && entry_path[0] == '/') {
+        entry_path = entry_path.substr(1);
+      }
+
+      if (e->attributes() & vfs::kFileAttributeDirectory) {
+        if (!entry_path.empty()) {
+          if (!zWriter.MakeDir(entry_path.c_str(), false)) {
+            XELOGI("Failed to create directory {}", entry_path);
+            return X_STATUS_UNSUCCESSFUL;
+          }
+        }
+        for (auto& child : e->children()) {
+          X_STATUS result = pack_entry(child.get());
+          if (result != X_STATUS_SUCCESS) {
+            return result;
+          }
+        }
+      } else {
+        XELOGI("Adding file: {}", entry_path);
+
+        if (!zWriter.StartNewFile(entry_path.c_str())) {
+          XELOGI("Failed to create archive file {}", entry_path);
+          return X_STATUS_UNSUCCESSFUL;
+        }
+
+        vfs::File* vfs_file = nullptr;
+        X_STATUS result = e->Open(vfs::FileAccess::kFileReadData, &vfs_file);
+        if (result != X_STATUS_SUCCESS || !vfs_file) {
+          XELOGI("Failed to open VFS file {}", entry_path);
+          return X_STATUS_UNSUCCESSFUL;
+        }
+
+        size_t remaining = e->size();
+        size_t offset = 0;
+        while (remaining > 0) {
+          if (entry.cancelled_.load()) {
+            vfs_file->Destroy();
+            return X_ERROR_CANCELLED;
+          }
+
+          size_t bytes_read = 0;
+          vfs_file->ReadSync(std::span<uint8_t>(buffer.data(), buffer.size()),
+                             offset, &bytes_read);
+          if (bytes_read == 0) break;
+
+          zWriter.AppendData(buffer.data(), bytes_read);
+          offset += bytes_read;
+          remaining -= bytes_read;
+          entry.currently_installed_size_ += bytes_read;
+        }
+        vfs_file->Destroy();
+      }
+
+      if (packContext.hasError) {
         return X_STATUS_UNSUCCESSFUL;
       }
-    } else if (dirEntry.is_regular_file()) {
-      // Don't pack itself to prevent infinite packing.
-      if (dirEntry == outputFile) {
-        continue;
-      }
+      return X_STATUS_SUCCESS;
+    };
 
-      XELOGI("Adding file: {}\n", pathEntry.string());
-
-      if (!zWriter.StartNewFile(pathEntry.generic_string().c_str())) {
-        XELOGI("Failed to create archive file {}\n", pathEntry.string());
-        return X_STATUS_UNSUCCESSFUL;
-      }
-
-      std::filesystem::path file_to_pack_path = inputDirectory / pathEntry;
-      FILE* file = xe::filesystem::OpenFile(file_to_pack_path, "rb");
-
-      if (!file) {
-        XELOGI("Failed to open input file {}\n", pathEntry.string());
-        return X_STATUS_UNSUCCESSFUL;
-      }
-
-      const uint64_t file_size = std::filesystem::file_size(file_to_pack_path);
-      uint64_t total_bytes_read = 0;
-
-      while (total_bytes_read < file_size) {
-        uint64_t bytes_read = fread(buffer.data(), 1, buffer.size(), file);
-
-        total_bytes_read += bytes_read;
-
-        zWriter.AppendData(buffer.data(), bytes_read);
-      }
-
-      fclose(file);
+    X_STATUS result = pack_entry(root);
+    if (result == X_ERROR_CANCELLED) {
+      return cleanup_and_fail("Cancelled", X_ERROR_CANCELLED);
     }
+    if (result != X_STATUS_SUCCESS) {
+      return cleanup_and_fail("Failed to pack STFS content",
+                              X_STATUS_UNSUCCESSFUL);
+    }
+  } else {
+    // Pack from raw filesystem directory
+    for (auto const& dirEntry :
+         std::filesystem::recursive_directory_iterator(inputDirectory)) {
+      if (entry.cancelled_.load()) {
+        return cleanup_and_fail("Cancelled", X_ERROR_CANCELLED);
+      }
 
-    if (packContext.hasError) {
-      return X_STATUS_UNSUCCESSFUL;
+      std::filesystem::path pathEntry =
+          std::filesystem::relative(dirEntry.path(), inputDirectory, ec);
+
+      if (ec) {
+        XELOGI("Failed to get relative path {}\n", pathEntry.string());
+        return cleanup_and_fail("Failed to get relative path",
+                                X_STATUS_UNSUCCESSFUL);
+      }
+
+      if (dirEntry.is_directory()) {
+        if (!zWriter.MakeDir(pathEntry.generic_string().c_str(), false)) {
+          XELOGI("Failed to create directory {}\n", pathEntry.string());
+          return cleanup_and_fail("Failed to create directory in archive",
+                                  X_STATUS_UNSUCCESSFUL);
+        }
+      } else if (dirEntry.is_regular_file()) {
+        // Don't pack itself to prevent infinite packing.
+        if (dirEntry == outputFile) {
+          continue;
+        }
+
+        XELOGI("Adding file: {}\n", pathEntry.string());
+
+        if (!zWriter.StartNewFile(pathEntry.generic_string().c_str())) {
+          XELOGI("Failed to create archive file {}\n", pathEntry.string());
+          return cleanup_and_fail("Failed to create file in archive",
+                                  X_STATUS_UNSUCCESSFUL);
+        }
+
+        std::filesystem::path file_to_pack_path = inputDirectory / pathEntry;
+        FILE* file = xe::filesystem::OpenFile(file_to_pack_path, "rb");
+
+        if (!file) {
+          XELOGI("Failed to open input file {}\n", pathEntry.string());
+          return cleanup_and_fail("Failed to open input file",
+                                  X_STATUS_UNSUCCESSFUL);
+        }
+
+        const uint64_t file_size =
+            std::filesystem::file_size(file_to_pack_path);
+        uint64_t total_bytes_read = 0;
+
+        while (total_bytes_read < file_size) {
+          if (entry.cancelled_.load()) {
+            fclose(file);
+            return cleanup_and_fail("Cancelled", X_ERROR_CANCELLED);
+          }
+
+          uint64_t bytes_read = fread(buffer.data(), 1, buffer.size(), file);
+
+          total_bytes_read += bytes_read;
+          entry.currently_installed_size_ += bytes_read;
+
+          zWriter.AppendData(buffer.data(), bytes_read);
+        }
+
+        fclose(file);
+      }
+
+      if (packContext.hasError) {
+        return cleanup_and_fail("Write error", X_STATUS_UNSUCCESSFUL);
+      }
     }
   }
 
   zWriter.Finalize();
 
+  entry.installation_result_ = X_STATUS_SUCCESS;
+  entry.installation_state_ = InstallState::installed;
   return X_STATUS_SUCCESS;
 }
 
@@ -1276,6 +1641,138 @@ bool Emulator::RestoreFromFile(const std::filesystem::path& path) {
   return true;
 }
 
+void Emulator::RelaunchTitle(const std::string& host_path,
+                             const std::string& launch_module,
+                             uint32_t launch_flags,
+                             std::vector<uint8_t> launch_data) {
+  XELOGI(
+      "RelaunchTitle: starting full in-process relaunch, target={}, module={}",
+      host_path, launch_module);
+
+  // Tell WaitUntilExit not to fire on_exit when main thread dies.
+  relaunching_ = true;
+
+  // Stop the dispatch thread gracefully before force-terminating threads,
+  // otherwise TerminateThread corrupts the CV it's blocked on.
+  kernel_state_->ShutdownDispatchThread();
+
+  // Force-terminate remaining threads.
+  {
+    auto threads =
+        kernel_state()->object_table()->GetObjectsByType<kernel::XThread>(
+            kernel::XObject::Type::Thread);
+    XELOGI("RelaunchTitle: terminating {} threads", threads.size());
+    for (auto thread : threads) {
+      thread->Terminate(0);
+    }
+  }
+
+  Shutdown();
+  Setup(nullptr, nullptr, require_cpu_backend_, nullptr, nullptr, nullptr);
+  MountStandardDrives();
+
+  // Populate launch data on the fresh xam module.
+  auto xam_new =
+      kernel_state_->GetKernelModule<kernel::xam::XamModule>("xam.xex");
+  if (xam_new) {
+    auto& ld = xam_new->loader_data();
+    ld.host_path =
+        host_path.empty() ? xe::path_to_utf8(command_line_) : host_path;
+    ld.launch_flags = launch_flags;
+    ld.launch_data = std::move(launch_data);
+    ld.launch_data_present = !ld.launch_data.empty();
+  }
+
+  // CompleteLaunch reads this cvar to determine the executable module.
+  cvars::launch_module = launch_module;
+
+  // Fall back to the initial launch path if host_path is empty (command-line
+  // launch rather than loader_data-driven).
+  auto launch_target =
+      host_path.empty() ? last_launch_path_ : xe::to_path(host_path);
+  XELOGI("RelaunchTitle: launching '{}'", xe::path_to_utf8(launch_target));
+  LaunchPath(launch_target);
+
+  relaunching_ = false;
+  XELOGI("RelaunchTitle: relaunch complete");
+}
+
+void Emulator::MountStandardDrives() {
+  auto fs = file_system_.get();
+
+  if (cvars::mount_scratch) {
+    auto scratch_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\SCRATCH", storage_root_ / "scratch", false);
+    if (!scratch_device->Initialize()) {
+      XELOGE("Unable to scan scratch path");
+    } else {
+      if (!fs->RegisterDevice(std::move(scratch_device))) {
+        XELOGE("Unable to register scratch path");
+      } else {
+        fs->RegisterSymbolicLink("scratch:", "\\SCRATCH");
+      }
+    }
+  }
+
+  if (cvars::mount_cache) {
+    auto cache0_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\CACHE0", storage_root_ / "cache0", false);
+    if (!cache0_device->Initialize()) {
+      XELOGE("Unable to scan cache0 path");
+    } else {
+      if (!fs->RegisterDevice(std::move(cache0_device))) {
+        XELOGE("Unable to register cache0 path");
+      } else {
+        fs->RegisterSymbolicLink("cache0:", "\\CACHE0");
+      }
+    }
+
+    auto cache1_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\CACHE1", storage_root_ / "cache1", false);
+    if (!cache1_device->Initialize()) {
+      XELOGE("Unable to scan cache1 path");
+    } else {
+      if (!fs->RegisterDevice(std::move(cache1_device))) {
+        XELOGE("Unable to register cache1 path");
+      } else {
+        fs->RegisterSymbolicLink("cache1:", "\\CACHE1");
+      }
+    }
+
+    // Some (older?) games try accessing cache:\ too
+    // NOTE: this must be registered _after_ the cache0/cache1 devices, due to
+    // substring/start_with logic inside VirtualFileSystem::ResolvePath, else
+    // accesses to those devices will go here instead
+    auto cache_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\CACHE", storage_root_ / "cache", false);
+    if (!cache_device->Initialize()) {
+      XELOGE("Unable to scan cache path");
+    } else {
+      if (!fs->RegisterDevice(std::move(cache_device))) {
+        XELOGE("Unable to register cache path");
+      } else {
+        fs->RegisterSymbolicLink("cache:", "\\CACHE");
+      }
+    }
+  }
+
+  if (cvars::force_mount_devkit) {
+    auto devkit_device =
+        std::make_unique<xe::vfs::HostPathDevice>("\\DEVKIT", "devkit", false);
+
+    if (!devkit_device->Initialize()) {
+      XELOGE("Unable to scan devkit path");
+    }
+
+    if (!fs->RegisterDevice(std::move(devkit_device))) {
+      XELOGE("Unable to register devkit path");
+    }
+
+    fs->RegisterSymbolicLink("DEVKIT:", "\\DEVKIT");
+    fs->RegisterSymbolicLink("e:", "\\DEVKIT");
+  }
+}
+
 const std::filesystem::path Emulator::GetNewDiscPath(
     std::string window_message) {
   std::filesystem::path path = "";
@@ -1430,14 +1927,25 @@ bool Emulator::ExceptionCallbackThunk(Exception* ex, void* data) {
 
 bool Emulator::ExceptionCallback(Exception* ex) {
   // Check to see if the exception occurred in guest code.
-  auto code_cache = processor()->backend()->code_cache();
+  auto* backend = processor() ? processor()->backend() : nullptr;
+  auto* code_cache = backend ? backend->code_cache() : nullptr;
+  if (!code_cache) {
+    // No code cache (for example, in UI/profile mode using the null backend).
+    return false;
+  }
   auto code_base = code_cache->execute_base_address();
   auto code_end = code_base + code_cache->total_size();
 
   if (!processor()->is_debugger_attached() && debugging::IsDebuggerAttached()) {
+#if XE_PLATFORM_IOS
+    // On iOS, an attached host debugger is often required to enable JIT.
+    // Don't immediately forward all faults to LLDB - still allow Xenia to
+    // handle guest-code faults below.
+#else
     // If Xenia's debugger isn't attached but another one is, pass it to that
     // debugger.
     return false;
+#endif
   } else if (processor()->is_debugger_attached()) {
     // Let the debugger handle this exception. It may decide to continue past
     // it (if it was a stepping breakpoint, etc).
@@ -1520,8 +2028,14 @@ void Emulator::WaitUntilExit() {
 
     if (restoring_) {
       restore_fence_.Wait();
+    } else if (relaunching_) {
+      // RelaunchTitle is running on another thread - wait for it to finish
+      // and set the new main_thread_, then loop back to wait on it.
+      while (relaunching_) {
+        xe::threading::Sleep(std::chrono::milliseconds(10));
+      }
     } else {
-      // Not restoring and the thread exited. We're finished.
+      // Not restoring/relaunching and the thread exited. We're finished.
       break;
     }
   }
@@ -1703,7 +2217,10 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
 
     game_info_database_ =
         std::make_unique<kernel::util::GameInfoDatabase>(db.get());
-    kernel_state_->xam_state()->LoadSpaInfo(db.get(), path);
+    // Don't persist disc path during in-process relaunch; only for
+    // user-initiated file opens.
+    kernel_state_->xam_state()->LoadSpaInfo(
+        db.get(), relaunching_ ? std::filesystem::path{} : path);
 
     // AddTitleToPlayedList is now called inside LoadSpaInfo/UpdateSpaInfo
 

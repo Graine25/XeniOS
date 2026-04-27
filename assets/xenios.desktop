@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=XeniOS
+GenericName=Xbox 360 Emulator
+Comment=Xbox 360 Research Emulator
+Exec=xenios %f
+Icon=xenios
+Terminal=false
+Categories=Game;Emulator;
+MimeType=application/x-xbox360-executable;application/x-xbox360-iso;
+StartupNotify=true
+StartupWMClass=xenios

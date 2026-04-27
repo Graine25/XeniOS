@@ -48,6 +48,9 @@ class TraceDump {
   bool Load(const std::filesystem::path& trace_file_path);
   int Run();
 
+  std::filesystem::path storage_root_;
+  std::filesystem::path content_root_;
+  std::filesystem::path cache_root_;
   std::filesystem::path trace_file_path_;
   std::filesystem::path base_output_path_;
 };

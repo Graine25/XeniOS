@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="jp.xenia.emulator">
+    package="jp.xenios.emulator">
 
     <uses-feature
         android:name="android.hardware.vulkan.level"
@@ -24,7 +24,7 @@
         android:theme="@android:style/Theme.Material.Light">
 
         <activity
-            android:name="jp.xenia.emulator.LauncherActivity"
+            android:name="jp.xenios.emulator.LauncherActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -33,14 +33,14 @@
         </activity>
 
         <activity
-            android:name="jp.xenia.emulator.GpuTraceViewerActivity"
+            android:name="jp.xenios.emulator.GpuTraceViewerActivity"
             android:exported="true"
             android:label="@string/activity_label_gpu_trace_viewer"
             android:screenOrientation="sensorLandscape"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />
 
         <activity
-            android:name="jp.xenia.emulator.WindowDemoActivity"
+            android:name="jp.xenios.emulator.WindowDemoActivity"
             android:exported="true"
             android:label="@string/activity_label_window_demo"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />

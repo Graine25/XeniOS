@@ -285,7 +285,7 @@ bool AndroidWindowedAppContext::Initialize(JNIEnv* ui_thread_jni_env,
         } else {
           jstring launch_arguments_extra_name =
               ui_thread_jni_env_->NewStringUTF(
-                  "jp.xenia.emulator.WindowedAppActivity.EXTRA_CVARS");
+                  "jp.xenios.emulator.WindowedAppActivity.EXTRA_CVARS");
           if (!launch_arguments_extra_name) {
             __android_log_write(
                 ANDROID_LOG_ERROR, "AndroidWindowedAppContext",
@@ -598,7 +598,7 @@ bool AndroidWindowedAppContext::InitializeApp(std::unique_ptr<WindowedApp> (
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_jp_xenia_emulator_WindowedAppActivity_initializeWindowedAppOnCreate(
+Java_jp_xenios_emulator_WindowedAppActivity_initializeWindowedAppOnCreate(
     JNIEnv* jni_env, jobject activity, jstring windowed_app_identifier,
     jobject asset_manager) {
   return reinterpret_cast<jlong>(
@@ -608,14 +608,14 @@ Java_jp_xenia_emulator_WindowedAppActivity_initializeWindowedAppOnCreate(
 }
 
 JNIEXPORT void JNICALL
-Java_jp_xenia_emulator_WindowedAppActivity_onDestroyNative(
+Java_jp_xenios_emulator_WindowedAppActivity_onDestroyNative(
     JNIEnv* jni_env, jobject activity, jlong app_context_ptr) {
   reinterpret_cast<xe::ui::AndroidWindowedAppContext*>(app_context_ptr)
       ->JniActivityOnDestroy();
 }
 
 JNIEXPORT void JNICALL
-Java_jp_xenia_emulator_WindowedAppActivity_onWindowSurfaceLayoutChange(
+Java_jp_xenios_emulator_WindowedAppActivity_onWindowSurfaceLayoutChange(
     JNIEnv* jni_env, jobject activity, jlong app_context_ptr, jint left,
     jint top, jint right, jint bottom) {
   reinterpret_cast<xe::ui::AndroidWindowedAppContext*>(app_context_ptr)
@@ -623,7 +623,7 @@ Java_jp_xenia_emulator_WindowedAppActivity_onWindowSurfaceLayoutChange(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_jp_xenia_emulator_WindowedAppActivity_onWindowSurfaceMotionEvent(
+Java_jp_xenios_emulator_WindowedAppActivity_onWindowSurfaceMotionEvent(
     JNIEnv* jni_env, jobject activity, jlong app_context_ptr, jobject event) {
   return jboolean(
       reinterpret_cast<xe::ui::AndroidWindowedAppContext*>(app_context_ptr)
@@ -631,14 +631,14 @@ Java_jp_xenia_emulator_WindowedAppActivity_onWindowSurfaceMotionEvent(
 }
 
 JNIEXPORT void JNICALL
-Java_jp_xenia_emulator_WindowedAppActivity_onWindowSurfaceChanged(
+Java_jp_xenios_emulator_WindowedAppActivity_onWindowSurfaceChanged(
     JNIEnv* jni_env, jobject activity, jlong app_context_ptr,
     jobject window_surface_object) {
   reinterpret_cast<xe::ui::AndroidWindowedAppContext*>(app_context_ptr)
       ->JniActivityOnWindowSurfaceChanged(window_surface_object);
 }
 
-JNIEXPORT void JNICALL Java_jp_xenia_emulator_WindowedAppActivity_paintWindow(
+JNIEXPORT void JNICALL Java_jp_xenios_emulator_WindowedAppActivity_paintWindow(
     JNIEnv* jni_env, jobject activity, jlong app_context_ptr,
     jboolean force_paint) {
   reinterpret_cast<xe::ui::AndroidWindowedAppContext*>(app_context_ptr)

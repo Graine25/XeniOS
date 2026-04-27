@@ -617,48 +617,6 @@ D3D12CommandProcessor::GetSystemBindlessViewHandlePair(
 }
 
 ui::d3d12::util::DescriptorCpuGpuHandlePair
-D3D12CommandProcessor::GetSharedMemoryUintPow2BindlessSRVHandlePair(
-    uint32_t element_size_bytes_pow2) const {
-  SystemBindlessView view;
-  switch (element_size_bytes_pow2) {
-    case 2:
-      view = SystemBindlessView::kSharedMemoryR32UintSRV;
-      break;
-    case 3:
-      view = SystemBindlessView::kSharedMemoryR32G32UintSRV;
-      break;
-    case 4:
-      view = SystemBindlessView::kSharedMemoryR32G32B32A32UintSRV;
-      break;
-    default:
-      assert_unhandled_case(element_size_bytes_pow2);
-      view = SystemBindlessView::kSharedMemoryR32UintSRV;
-  }
-  return GetSystemBindlessViewHandlePair(view);
-}
-
-ui::d3d12::util::DescriptorCpuGpuHandlePair
-D3D12CommandProcessor::GetSharedMemoryUintPow2BindlessUAVHandlePair(
-    uint32_t element_size_bytes_pow2) const {
-  SystemBindlessView view;
-  switch (element_size_bytes_pow2) {
-    case 2:
-      view = SystemBindlessView::kSharedMemoryR32UintUAV;
-      break;
-    case 3:
-      view = SystemBindlessView::kSharedMemoryR32G32UintUAV;
-      break;
-    case 4:
-      view = SystemBindlessView::kSharedMemoryR32G32B32A32UintUAV;
-      break;
-    default:
-      assert_unhandled_case(element_size_bytes_pow2);
-      view = SystemBindlessView::kSharedMemoryR32UintUAV;
-  }
-  return GetSystemBindlessViewHandlePair(view);
-}
-
-ui::d3d12::util::DescriptorCpuGpuHandlePair
 D3D12CommandProcessor::GetEdramUintPow2BindlessSRVHandlePair(
     uint32_t element_size_bytes_pow2) const {
   SystemBindlessView view;
@@ -1705,46 +1663,10 @@ bool D3D12CommandProcessor::SetupContext() {
     shared_memory_->WriteRawSRVDescriptor(provider.OffsetViewDescriptor(
         view_bindless_heap_cpu_start_,
         uint32_t(SystemBindlessView::kSharedMemoryRawSRV)));
-    // kSharedMemoryR32UintSRV.
-    shared_memory_->WriteUintPow2SRVDescriptor(
-        provider.OffsetViewDescriptor(
-            view_bindless_heap_cpu_start_,
-            uint32_t(SystemBindlessView::kSharedMemoryR32UintSRV)),
-        2);
-    // kSharedMemoryR32G32UintSRV.
-    shared_memory_->WriteUintPow2SRVDescriptor(
-        provider.OffsetViewDescriptor(
-            view_bindless_heap_cpu_start_,
-            uint32_t(SystemBindlessView::kSharedMemoryR32G32UintSRV)),
-        3);
-    // kSharedMemoryR32G32B32A32UintSRV.
-    shared_memory_->WriteUintPow2SRVDescriptor(
-        provider.OffsetViewDescriptor(
-            view_bindless_heap_cpu_start_,
-            uint32_t(SystemBindlessView::kSharedMemoryR32G32B32A32UintSRV)),
-        4);
     // kSharedMemoryRawUAV.
     shared_memory_->WriteRawUAVDescriptor(provider.OffsetViewDescriptor(
         view_bindless_heap_cpu_start_,
         uint32_t(SystemBindlessView::kSharedMemoryRawUAV)));
-    // kSharedMemoryR32UintUAV.
-    shared_memory_->WriteUintPow2UAVDescriptor(
-        provider.OffsetViewDescriptor(
-            view_bindless_heap_cpu_start_,
-            uint32_t(SystemBindlessView::kSharedMemoryR32UintUAV)),
-        2);
-    // kSharedMemoryR32G32UintUAV.
-    shared_memory_->WriteUintPow2UAVDescriptor(
-        provider.OffsetViewDescriptor(
-            view_bindless_heap_cpu_start_,
-            uint32_t(SystemBindlessView::kSharedMemoryR32G32UintUAV)),
-        3);
-    // kSharedMemoryR32G32B32A32UintUAV.
-    shared_memory_->WriteUintPow2UAVDescriptor(
-        provider.OffsetViewDescriptor(
-            view_bindless_heap_cpu_start_,
-            uint32_t(SystemBindlessView::kSharedMemoryR32G32B32A32UintUAV)),
-        4);
     // kEdramRawSRV.
     render_target_cache_->WriteEdramRawSRVDescriptor(
         provider.OffsetViewDescriptor(
@@ -3358,7 +3280,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
     HeapAllocationInfo alloc_info;
     if (physical_heap->QueryRegionInfo(written_address, &alloc_info) &&
         (alloc_info.state & kMemoryAllocationCommit) &&
-        (alloc_info.protect & kMemoryProtectWrite)) {
+        IsWritableProtect(alloc_info.protect)) {
       uint32_t end_address = written_address + written_length;
       uint32_t region_end = alloc_info.base_address + alloc_info.region_size;
       if (end_address <= region_end) {

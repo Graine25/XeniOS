@@ -10,7 +10,7 @@
 -->
 <RCC>
     <qresource prefix="/xenia">
-        <file alias="icon.png">../../../assets/icon/128.png</file>
+        <file alias="icon.png">../../../assets/apple/xenios-readme-icon.png</file>
         <file alias="folder-icon.png">../../../assets/qt/icons8-opened-folder-96.png</file>
         <file alias="pause-icon.png">../../../assets/qt/icons8-pause-96.png</file>
         <file alias="play-icon.png">../../../assets/qt/icons8-play-96.png</file>

@@ -10,6 +10,7 @@
 #ifndef XENIA_UI_WINDOWED_APP_CONTEXT_QT_H_
 #define XENIA_UI_WINDOWED_APP_CONTEXT_QT_H_
 
+#include <atomic>
 #include <mutex>
 
 #include "xenia/base/platform.h"
@@ -46,6 +47,7 @@ class QtWindowedAppContext final : public WindowedAppContext {
 
   QApplication* app_;
   QTimer* pending_functions_timer_ = nullptr;
+  std::atomic<bool> shutdown_{false};
 
 #if XE_PLATFORM_WIN32
   HINSTANCE hinstance_;

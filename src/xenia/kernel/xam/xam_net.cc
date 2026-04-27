@@ -21,12 +21,20 @@
 
 #ifdef XE_PLATFORM_WIN32
 // NOTE: must be included last as it expects windows.h to already be included.
+#ifndef _WINSOCK_DEPRECATED_NO_WARNINGS
 #define _WINSOCK_DEPRECATED_NO_WARNINGS  // inet_addr
-#include <winsock2.h>                    // NOLINT(build/include_order)
+#endif
+#include <winsock2.h>  // NOLINT(build/include_order)
 #elif XE_PLATFORM_LINUX
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <sys/socket.h>
+#elif XE_PLATFORM_APPLE
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #endif
 
@@ -323,9 +331,7 @@ DECLARE_XAM_EXPORT1(NetDll_WSACleanup, kNetworking, kImplemented);
 // Xbox shares space between normal error codes and WSA errors.
 // This under the hood returns directly value received from RtlGetLastError.
 dword_result_t NetDll_WSAGetLastError_entry() {
-  uint32_t last_error = XThread::GetLastError();
-  XELOGD("NetDll_WSAGetLastError: {}", last_error);
-  return last_error;
+  return XThread::GetLastError();
 }
 DECLARE_XAM_EXPORT1(NetDll_WSAGetLastError, kNetworking, kImplemented);
 

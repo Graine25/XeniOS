@@ -262,6 +262,10 @@ class KernelState {
   // This DOES NOT RETURN if called from a guest thread!
   void TerminateTitle();
 
+  // Gracefully stops the dispatch thread. Call before force-terminating
+  // threads to avoid corrupting the CV it's blocked on.
+  void ShutdownDispatchThread();
+
   void RegisterThread(XThread* thread);
   void UnregisterThread(XThread* thread);
   void OnThreadExecute(XThread* thread);

@@ -16,12 +16,16 @@ project("xenia-gpu")
     "xxhash",
   })
   includedirs({
-    project_root.."/third_party/Vulkan-Headers/include",
     project_root.."/third_party/glslang",  -- For glslang SPIRV headers
   })
+  filter("platforms:Linux-* or Windows-* or Android-*")
+    includedirs({
+      project_root.."/third_party/Vulkan-Headers/include",
+    })
+  filter({})
 
   -- Include SPIRV-Tools headers from Vulkan SDK for Windows
-  filter("platforms:Windows")
+  filter("platforms:Windows-*")
     includedirs({
       "$(VULKAN_SDK)/Include",
     })
@@ -29,7 +33,12 @@ project("xenia-gpu")
 
   local_platform_files()
 
-if enableMiscSubprojects then
+  -- spirv_shader files are compiled on all platforms where the SPIR-V
+  -- shader translator is used: Linux/Windows/Android (Vulkan backend) and
+  -- macOS/iOS (Metal SPIRV-Cross backend). Vulkan-specific parts are guarded
+  -- with #if !XE_PLATFORM_APPLE in the source.
+
+if enableMiscSubprojects and not os.istarget("macosx") then
   group("src")
   project("xenia-gpu-shader-compiler")
     uuid("ad76d3e4-4c62-439b-a0f6-f83fcf0e83c5")
@@ -54,13 +63,13 @@ if enableMiscSubprojects then
     })
 
     -- Include SPIRV-Tools headers from Vulkan SDK
-    filter("platforms:Windows")
+    filter("platforms:Windows-*")
       includedirs({
         "$(VULKAN_SDK)/Include",
       })
     filter({})
 
-    filter("platforms:Windows")
+    filter("platforms:Windows-*")
       -- Only create the .user file if it doesn't already exist.
       local user_file = project_root.."/build/xenia-gpu-shader-compiler.vcxproj.user"
       if not os.isfile(user_file) then
@@ -71,9 +80,4 @@ if enableMiscSubprojects then
         })
       end
     filter({})
-end
-
--- Shader testing suite
-if enableTests then
-  include("shaders/testing")
 end

@@ -17,14 +17,18 @@
 #include <utility>
 #include <vector>
 
+#include "xenia/base/platform.h"
 #include "xenia/gpu/shader_translator.h"
 #include "xenia/gpu/spirv_builder.h"
 #include "xenia/gpu/xenos.h"
+#if !XE_PLATFORM_APPLE
 #include "xenia/ui/vulkan/vulkan_device.h"
+#endif  // !XE_PLATFORM_APPLE
 
 namespace xe {
 namespace ui {
 namespace vulkan {
+class VulkanDevice;
 class SpirvToolsContext;
 }  // namespace vulkan
 }  // namespace ui
@@ -39,7 +43,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // TODO(Triang3l): Change to 0xYYYYMMDD once it's out of the rapid
     // prototyping stage (easier to do small granular updates with an
     // incremental counter).
-    static constexpr uint32_t kVersion = 8;
+    static constexpr uint32_t kVersion = 10;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -97,6 +101,8 @@ class SpirvShaderTranslator : public ShaderTranslator {
       // For host render targets - which color render targets are actually
       // bound.
       uint32_t color_targets_used : xenos::kMaxColorRenderTargets;
+      // Whether to use manual barycentric interpolation for precision.
+      uint32_t precise_interpolation : 1;
     } pixel;
     uint64_t value = 0;
 
@@ -197,6 +203,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
   struct SystemConstants {
     uint32_t flags;
     uint32_t vertex_index_load_address;
+    uint32_t vertex_index_count;
     xenos::Endian vertex_index_endian;
     int32_t vertex_base_index;
 
@@ -368,7 +375,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   static constexpr uint32_t kSpirvMagicToolId = 26;
 
   struct Features {
+#if !XE_PLATFORM_APPLE
     explicit Features(const ui::vulkan::VulkanDevice* vulkan_device);
+#endif  // !XE_PLATFORM_APPLE
     explicit Features(bool all = false);
 
     unsigned int spirv_version;
@@ -392,6 +401,8 @@ class SpirvShaderTranslator : public ShaderTranslator {
     bool fragment_shader_sample_interlock;
 
     bool demote_to_helper_invocation;
+
+    bool fragment_shader_barycentric;
   };
 
   SpirvShaderTranslator(
@@ -399,7 +410,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
       bool native_2x_msaa_no_attachments, bool edram_fragment_shader_interlock,
       uint32_t draw_resolution_scale_x = 1,
       uint32_t draw_resolution_scale_y = 1,
+#if !XE_PLATFORM_APPLE
       ui::vulkan::SpirvToolsContext* spirv_tools_context = nullptr,
+#endif  // !XE_PLATFORM_APPLE
       bool spirv_optimize = true)
       : features_(features),
         native_2x_msaa_with_attachments_(native_2x_msaa_with_attachments),
@@ -407,8 +420,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
         edram_fragment_shader_interlock_(edram_fragment_shader_interlock),
         draw_resolution_scale_x_(draw_resolution_scale_x),
         draw_resolution_scale_y_(draw_resolution_scale_y),
+#if !XE_PLATFORM_APPLE
         spirv_tools_context_(spirv_tools_context),
-        spirv_optimize_(spirv_optimize) {}
+#endif  // !XE_PLATFORM_APPLE
+        spirv_optimize_(spirv_optimize) {
+  }
 
   uint64_t GetDefaultVertexShaderModification(
       uint32_t dynamic_addressable_register_count,
@@ -542,6 +558,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
            GetSpirvShaderModification().vertex.host_vertex_shader_type ==
                Shader::HostVertexShaderType::kMemExportCompute;
   }
+  bool IsSpirvRectListAsTriangleStrip() const {
+    return IsSpirvVertexShader() &&
+           GetSpirvShaderModification().vertex.host_vertex_shader_type ==
+               Shader::HostVertexShaderType::kRectangleListAsTriangleStrip;
+  }
 
   bool IsExecutionModeEarlyFragmentTests() const {
     return is_pixel_shader() &&
@@ -569,6 +590,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   void StartVertexOrTessEvalShaderBeforeMain();
   void StartVertexOrTessEvalShaderInMain();
   void CompleteVertexOrTessEvalShaderInMain();
+  void ResetUcodeInvocationStateInMain();
+  void ResetVertexShaderInvocationStateInMain();
+  void WriteVertexIndexToRegister0(spv::Id vertex_index);
 
   void StartFragmentShaderBeforeMain();
   void StartFragmentShaderInMain();
@@ -783,7 +807,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   bool native_2x_msaa_no_attachments_;
   uint32_t draw_resolution_scale_x_;
   uint32_t draw_resolution_scale_y_;
+#if !XE_PLATFORM_APPLE
   ui::vulkan::SpirvToolsContext* spirv_tools_context_;
+#endif  // !XE_PLATFORM_APPLE
   bool spirv_optimize_;
 
   // For safety with different drivers (even though fragment shader interlock in
@@ -879,6 +905,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
   enum SystemConstantIndex : unsigned int {
     kSystemConstantFlags,
     kSystemConstantVertexIndexLoadAddress,
+    kSystemConstantVertexIndexCount,
     kSystemConstantVertexIndexEndian,
     kSystemConstantVertexBaseIndex,
     kSystemConstantNdcScale,
@@ -941,6 +968,16 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // PS, only when needed - int[1].
   spv::Id input_sample_mask_;
 
+  // PS, barycentric coordinate inputs (when fragment_shader_barycentric is
+  // enabled) - float3.
+  spv::Id input_barycentric_coord_;
+  spv::Id input_barycentric_coord_no_persp_;
+
+  // PS, per-vertex interpolator arrays for barycentric interpolation (when
+  // fragment_shader_barycentric is enabled). Stores the array variable
+  // (float4[3]) for each interpolator.
+  std::array<spv::Id, xenos::kMaxInterpolators> input_interpolators_per_vertex_;
+
   // VS output or PS input, only the ones that are needed (spv::NoResult for the
   // unneeded interpolators), indexed by the guest interpolator index - float4.
   // The Qualcomm Adreno driver has strict requirements for stage linkage - as
@@ -965,6 +1002,18 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Id output_per_vertex_;
   unsigned int output_per_vertex_clip_distance_member_index_ = 0;
   unsigned int output_per_vertex_cull_distance_member_index_ = 0;
+
+  // VS, only for HostVertexShaderType::kRectangleListAsTriangleStrip.
+  bool main_vertex_rect_list_as_triangle_strip_ = false;
+  // uint (lower 2 bits of the expanded host vertex index).
+  spv::Id var_main_rect_list_strip_vertex_;
+  // int3 (guest indices for the 3 rectangle vertices after base addition).
+  spv::Id var_main_rect_list_guest_vertex_indices_;
+  // float4[3] (guest clip-space positions for the 3 rectangle vertices).
+  spv::Id var_main_rect_list_guest_positions_;
+  // For used interpolators only: float4[3].
+  std::array<spv::Id, xenos::kMaxInterpolators>
+      var_main_rect_list_guest_interpolators_;
 
   // Function-scoped variables for fragment color data.
   // Used by both FSI and FBO paths so that color values can be read back
@@ -1067,6 +1116,15 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Block* main_loop_continue_;
   spv::Block* main_loop_merge_;
   spv::Id main_loop_pc_next_;
+  // VS only, for HostVertexShaderType::kRectangleListAsTriangleStrip.
+  spv::Block* main_rect_list_loop_header_;
+  spv::Block* main_rect_list_loop_continue_;
+  spv::Block* main_rect_list_loop_merge_;
+  // int (0..2), OpPhi in main_rect_list_loop_header_.
+  spv::Id main_rect_list_loop_vertex_index_;
+  // int, produced in main_rect_list_loop_continue_ and consumed by the OpPhi in
+  // main_rect_list_loop_header_.
+  spv::Id main_rect_list_loop_vertex_index_next_;
   spv::Block* main_switch_header_;
   std::unique_ptr<spv::Instruction> main_switch_op_;
   spv::Block* main_switch_merge_;

@@ -92,9 +92,8 @@ GameConfigDialogQt::GameConfigDialogQt(QWidget* parent,
   LoadConfigOverrides();
 
   // Check if recommended settings exist and enable/disable button accordingly
-  std::filesystem::path settings_path =
-      xe::filesystem::GetExecutableFolder() / "optimized_settings" /
-      (fmt::format("{:08X}", title_id_) + ".json");
+  auto settings_path = config::GetBundledDataPath("optimized_settings") /
+                       (fmt::format("{:08X}", title_id_) + ".json");
   recommended_button_->setEnabled(std::filesystem::exists(settings_path));
 }
 
@@ -703,10 +702,8 @@ void GameConfigDialogQt::OnUseRecommendedClicked() {
 }
 
 void GameConfigDialogQt::LoadRecommendedSettings() {
-  // Construct path to recommended settings JSON file
-  std::filesystem::path settings_path =
-      xe::filesystem::GetExecutableFolder() / "optimized_settings" /
-      (fmt::format("{:08X}", title_id_) + ".json");
+  auto settings_path = config::GetBundledDataPath("optimized_settings") /
+                       (fmt::format("{:08X}", title_id_) + ".json");
 
   if (!std::filesystem::exists(settings_path)) {
     QMessageBox::information(this, "No Recommended Settings",

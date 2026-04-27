@@ -98,6 +98,9 @@ class TextureCache {
   virtual void BeginFrame();
 
   void MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled);
+  uint64_t texture_binding_generation() const {
+    return texture_binding_generation_.load(std::memory_order_relaxed);
+  }
   // Ensures the memory backing the range in the scaled resolve address space is
   // allocated and returns whether it is.
   virtual bool EnsureScaledResolveMemoryCommitted(
@@ -111,6 +114,7 @@ class TextureCache {
 
   void TextureFetchConstantWritten(uint32_t index) {
     texture_bindings_in_sync_ &= ~(UINT32_C(1) << index);
+    texture_binding_generation_.fetch_add(1, std::memory_order_relaxed);
   }
   void TextureFetchConstantsWritten(uint32_t first_index, uint32_t last_index) {
     // generate a mask of all bits from before the first index, and xor it with
@@ -121,9 +125,26 @@ class TextureCache {
     // todo: check that this is right
 
     texture_bindings_in_sync_ &= ~res;
+    texture_binding_generation_.fetch_add(1, std::memory_order_relaxed);
   }
 
   virtual void RequestTextures(uint32_t used_texture_mask);
+  // Returns whether RequestTextures(used_texture_mask) may need to process
+  // bindings or reload texture data from guest memory.
+  bool AnyUsedTextureRequestWorkPending(uint32_t used_texture_mask) const;
+  // Returns a bitmask of used fetch constants that RequestTextures would need
+  // to process (unsynchronized or referencing outdated textures).
+  uint32_t GetUsedTextureRequestWorkMask(uint32_t used_texture_mask) const;
+  // Returns a bitmask of used fetch constants that may require loading texture
+  // data from shared memory in RequestTextures (actual copy->draw hazard path).
+  uint32_t GetUsedTexturePotentialLoadMask(uint32_t used_texture_mask) const;
+
+  struct RequestWorkStats {
+    uint64_t potential_load_mask_slots = 0;
+    uint64_t request_work_mask_slots = 0;
+    uint64_t actual_textures_enqueued_for_load = 0;
+  };
+  RequestWorkStats ConsumeRequestWorkStats();
 
   // "ActiveTexture" means as of the latest RequestTextures call.
 
@@ -278,16 +299,20 @@ class TextureCache {
     uint64_t last_usage_time() const { return last_usage_time_; }
 
     bool base_outdated(const global_unique_lock_type& global_lock) const {
-      return base_outdated_;
+      return base_outdated_.load(std::memory_order_relaxed);
     }
     bool mips_outdated(const global_unique_lock_type& global_lock) const {
-      return mips_outdated_;
+      return mips_outdated_.load(std::memory_order_relaxed);
     }
     // Lockless accessors for pre-check optimization.
     // Safe to read without lock - worst case is false positive (outdated when
     // not).
-    bool base_outdated_lockless() const { return base_outdated_; }
-    bool mips_outdated_lockless() const { return mips_outdated_; }
+    bool base_outdated_lockless() const {
+      return base_outdated_.load(std::memory_order_relaxed);
+    }
+    bool mips_outdated_lockless() const {
+      return mips_outdated_.load(std::memory_order_relaxed);
+    }
     void MakeUpToDateAndWatch(const global_unique_lock_type& global_lock);
 
     void WatchCallback(const global_unique_lock_type& global_lock, bool is_mip);
@@ -337,9 +362,9 @@ class TextureCache {
     // These are to be accessed within the global critical region to synchronize
     // with shared memory.
     // Whether the recent base level data needs reloading from the memory.
-    bool base_outdated_ = false;
+    std::atomic<bool> base_outdated_{false};
     // Whether the recent mip data needs reloading from the memory.
-    bool mips_outdated_ = false;
+    std::atomic<bool> mips_outdated_{false};
     // Watch handles for the memory ranges.
     SharedMemory::WatchHandle base_watch_handle_ = nullptr;
     SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
@@ -496,11 +521,6 @@ class TextureCache {
   };
 
   struct LoadShaderInfo {
-    // Log2 of the sizes, in bytes, of the elements in the source (guest) and
-    // the destination (host) buffer bindings accessed by the copying shader,
-    // since the shader may copy multiple blocks per one invocation.
-    uint32_t source_bpe_log2;
-    uint32_t dest_bpe_log2;
     // Number of bytes in a host resolution-scaled block (corresponding to a
     // guest block if not decompressing, or a host texel if decompressing)
     // written by the shader.
@@ -617,6 +637,8 @@ class TextureCache {
   // this will cause another attempt to create a texture or to untile it if
   // there was an error.
   void ResetTextureBindings(bool from_destructor = false);
+  bool IsBindingOutdatedForUse(const TextureBinding& binding) const;
+  void InvalidateUsedOutdatedBindings(uint32_t used_texture_mask);
 
   const TextureBinding* GetValidTextureBinding(
       uint32_t fetch_constant_index) const {
@@ -689,6 +711,10 @@ class TextureCache {
   // Bit vector with bits reset on fetch constant writes to avoid parsing fetch
   // constants again and again.
   uint32_t texture_bindings_in_sync_ = 0;
+  std::atomic<uint64_t> texture_binding_generation_{1};
+  mutable std::atomic<uint64_t> request_work_mask_slots_total_{0};
+  mutable std::atomic<uint64_t> potential_load_mask_slots_total_{0};
+  mutable std::atomic<uint64_t> actual_textures_enqueued_for_load_total_{0};
 };
 
 }  // namespace gpu

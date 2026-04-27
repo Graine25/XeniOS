@@ -34,6 +34,7 @@ QtWindowedAppContext::QtWindowedAppContext(QApplication* app)
 }
 
 QtWindowedAppContext::~QtWindowedAppContext() {
+  shutdown_.store(true, std::memory_order_release);
   if (pending_functions_timer_) {
     pending_functions_timer_->stop();
     delete pending_functions_timer_;
@@ -42,6 +43,9 @@ QtWindowedAppContext::~QtWindowedAppContext() {
 }
 
 void QtWindowedAppContext::NotifyUILoopOfPendingFunctions() {
+  if (shutdown_.load(std::memory_order_acquire)) {
+    return;
+  }
   // Use QMetaObject::invokeMethod on the timer to safely call from any thread
   QMetaObject::invokeMethod(
       pending_functions_timer_, [this]() { StartTimerInternal(); },
@@ -49,6 +53,9 @@ void QtWindowedAppContext::NotifyUILoopOfPendingFunctions() {
 }
 
 void QtWindowedAppContext::StartTimerInternal() {
+  if (shutdown_.load(std::memory_order_acquire) || !pending_functions_timer_) {
+    return;
+  }
   if (!pending_functions_timer_->isActive()) {
     pending_functions_timer_->start(0);
   }

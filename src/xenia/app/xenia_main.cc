@@ -24,9 +24,11 @@
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
 #include "xenia/config.h"
+#include "xenia/debug/gdb/gdbstub.h"
 #include "xenia/debug/ui/debug_window.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/xam/xam_module.h"
+#include "xenia/storage_flags.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/window.h"
 #include "xenia/ui/window_listener.h"
@@ -48,10 +50,15 @@
 
 // Available graphics systems:
 #include "xenia/gpu/null/null_graphics_system.h"
+#if !XE_PLATFORM_APPLE
 #include "xenia/gpu/vulkan/vulkan_graphics_system.h"
+#endif  // !XE_PLATFORM_APPLE
 #if XE_PLATFORM_WIN32
 #include "xenia/gpu/d3d12/d3d12_graphics_system.h"
 #endif  // XE_PLATFORM_WIN32
+#if XE_PLATFORM_APPLE
+#include "xenia/gpu/metal/metal_graphics_system.h"
+#endif  // XE_PLATFORM_APPLE
 
 // Available input drivers:
 #include "xenia/hid/nop/nop_hid.h"
@@ -79,44 +86,19 @@ DEFINE_string(gpu, "vulkan", "Graphics system. Use: " GPU_OPTIONS, "GPU");
 DEFINE_string(hid, "sdl", "Input system. Use: " HID_OPTIONS, "HID");
 #else
 #define APU_OPTIONS "[sdl, nop]"
-#define GPU_OPTIONS "[vulkan, null]"
 #define HID_OPTIONS "[sdl, nop]"
 DEFINE_string(apu, "sdl", "Audio system. Use: " APU_OPTIONS, "APU");
-DEFINE_string(gpu, "vulkan", "Graphics system. Use: " GPU_OPTIONS, "GPU");
+#if XE_PLATFORM_APPLE
+DEFINE_string(gpu, "metal", "Graphics system. Use: [metal, null]", "GPU");
+#else
+DEFINE_string(gpu, "vulkan", "Graphics system. Use: [vulkan, null]", "GPU");
+#endif
 DEFINE_string(hid, "sdl", "Input system. Use: " HID_OPTIONS, "HID");
 #endif
-
-DEFINE_path(
-    storage_root, "",
-    "Root path for persistent internal data storage (config, etc.), or empty "
-    "to use the path preferred for the OS, such as the documents folder, or "
-    "the emulator executable directory if portable.txt is present in it.",
-    "Storage");
-DEFINE_path(
-    content_root, "",
-    "Root path for guest content storage (saves, etc.), or empty to use the "
-    "content folder under the storage root.",
-    "Storage");
-DEFINE_path(
-    cache_root, "",
-    "Root path for files used to speed up certain parts of the emulator or the "
-    "game. These files may be persistent, but they can be deleted without "
-    "major side effects such as progress loss. If empty, the cache folder "
-    "under the storage root, or, if available, the cache directory preferred "
-    "for the OS, will be used.",
-    "Storage");
-
-DEFINE_bool(mount_scratch, false, "Enable scratch mount", "Storage");
-
-DEFINE_bool(mount_cache, true, "Enable cache mount", "Storage");
-UPDATE_from_bool(mount_cache, 2024, 8, 31, 20, false);
 
 DECLARE_bool(force_mount_devkit);
 
 DECLARE_path(target);  // Defined in windowed_app_main_qt.cc
-DEFINE_transient_bool(portable, false,
-                      "Specifies if Xenia should run in portable mode.",
-                      "General");
 
 DECLARE_uint32(window_size_ui_x);
 DECLARE_uint32(window_size_ui_y);
@@ -131,6 +113,10 @@ DEFINE_CVar(window_size_game_y, 0,
             "Display", true, uint32_t);
 
 DECLARE_bool(debug);
+DEFINE_int32(
+    gdbport, 0,
+    "Port for GDBStub debugger to listen on, requires --debug (0 = disable)",
+    "General");
 
 DEFINE_bool(discord, true, "Enable Discord rich presence", "General");
 
@@ -259,7 +245,7 @@ class EmulatorApp final : public xe::ui::WindowedApp {
     }
 
     std::unique_ptr<T> Create(const std::string_view name, Args... args) {
-      if (!name.empty()) {
+      if (!name.empty() && name != "any") {
         auto it = std::find_if(
             creators_.cbegin(), creators_.cend(),
             [&name](const auto& f) { return name.compare(f.name) == 0; });
@@ -337,6 +323,9 @@ class EmulatorApp final : public xe::ui::WindowedApp {
 
   // Created on demand, used by the emulator.
   std::unique_ptr<xe::debug::ui::DebugWindow> debug_window_;
+#if XE_PLATFORM_WIN32
+  std::unique_ptr<xe::debug::gdb::GDBStub> debug_gdbstub_;
+#endif
 
   // Refreshing the emulator - placed after its dependencies.
   std::atomic<bool> emulator_thread_quit_requested_;
@@ -459,7 +448,11 @@ std::unique_ptr<gpu::GraphicsSystem> EmulatorApp::CreateGraphicsSystem() {
 #if XE_PLATFORM_WIN32
   factory.Add<gpu::d3d12::D3D12GraphicsSystem>("d3d12");
 #endif  // XE_PLATFORM_WIN32
+#if XE_PLATFORM_APPLE
+  factory.Add<gpu::metal::MetalGraphicsSystem>("metal");
+#else
   factory.Add<gpu::vulkan::VulkanGraphicsSystem>("vulkan");
+#endif  // XE_PLATFORM_APPLE
   std::unique_ptr<gpu::GraphicsSystem> gpu_implementation =
       factory.Create(gpu_implementation_name);
   if (!gpu_implementation) {
@@ -483,7 +476,7 @@ std::unique_ptr<gpu::GraphicsSystem> EmulatorApp::CreateGraphicsSystem() {
         "Also, ensure that you have the latest driver installed for your GPU.\n"
         "\n"
 #endif  // XE_PLATFORM_ANDROID
-        "See https://xenia.jp/faq/ for more information and the system "
+        "See https://xenios.jp/faq for more information and the system "
         "requirements.");
   }
   return gpu_implementation;
@@ -781,20 +774,35 @@ void EmulatorApp::EmulatorThread(bool is_game_process) {
   // Set a debug handler.
   // This will respond to debugging requests so we can open the debug UI.
   if (cvars::debug) {
-    emulator_->processor()->set_debug_listener_request_handler(
-        [this](xe::cpu::Processor* processor) {
-          if (debug_window_) {
-            return debug_window_.get();
-          }
-          app_context().CallInUIThreadSynchronous([this]() {
-            debug_window_ = xe::debug::ui::DebugWindow::Create(emulator_.get(),
-                                                               app_context());
-            debug_window_->window()->AddListener(
-                &debug_window_closed_listener_);
+    if (cvars::gdbport > 0) {
+#if XE_PLATFORM_WIN32
+      emulator_->processor()->set_debug_listener_request_handler(
+          [this](xe::cpu::Processor* processor) {
+            if (debug_gdbstub_) {
+              return debug_gdbstub_.get();
+            }
+            debug_gdbstub_ = xe::debug::gdb::GDBStub::Create(emulator_.get(),
+                                                             cvars::gdbport);
+            return debug_gdbstub_.get();
           });
-          // If failed to enqueue the UI thread call, this will just be null.
-          return debug_window_.get();
-        });
+      emulator_->processor()->ShowDebugger();
+#endif
+    } else {
+      emulator_->processor()->set_debug_listener_request_handler(
+          [this](xe::cpu::Processor* processor) {
+            if (debug_window_) {
+              return debug_window_.get();
+            }
+            app_context().CallInUIThreadSynchronous([this]() {
+              debug_window_ = xe::debug::ui::DebugWindow::Create(
+                  emulator_.get(), app_context());
+              debug_window_->window()->AddListener(
+                  &debug_window_closed_listener_);
+            });
+            // If failed to enqueue the UI thread call, this will just be null.
+            return debug_window_.get();
+          });
+    }
   }
 
   emulator_->on_launch.AddListener([&](auto title_id, const auto& game_title) {
@@ -833,37 +841,11 @@ void EmulatorApp::EmulatorThread(bool is_game_process) {
     path = cvars::target;
   }
 
-  if (!path.empty()) {
-    // Normalize the path and make absolute.
-    auto abs_path = std::filesystem::absolute(path);
-
-    // TODO(has207): Add archive format check like in RunTitle?
-    result = emulator_->LaunchPath(abs_path);
-    if (XFAILED(result)) {
-      xe::FatalError(fmt::format("Failed to launch target: {:08X}", result));
-      app_context().RequestDeferredQuit();
-      return;
-    }
-
-    // Store the host path in loader_data for title-to-title launches
-    auto xam_for_path =
-        emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
-            "xam.xex");
-    if (xam_for_path) {
-      xam_for_path->loader_data().host_path = xe::path_to_utf8(abs_path);
-    }
-
-    // Add to recent titles if this is a game process
-    if (is_game_process && emulator_window_) {
-      emulator_window_->AddRecentlyLaunchedTitle(abs_path,
-                                                 emulator_->title_name());
-    }
-  }
-
+  // Set up launch data BEFORE LaunchPath — LaunchPath starts the game thread,
+  // and the game may query XamLoaderGetLaunchData during early init.
   auto xam = emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
       "xam.xex");
 
-  // Check if launch data was passed via command line (for title-to-title)
   if (xam && (cvars::launch_flags != 0 || !cvars::launch_data.empty())) {
     auto& loader_data = xam->loader_data();
     loader_data.launch_data_present = true;
@@ -878,6 +860,31 @@ void EmulatorApp::EmulatorThread(bool is_game_process) {
         uint8_t byte = static_cast<uint8_t>(std::stoul(byte_str, nullptr, 16));
         loader_data.launch_data.push_back(byte);
       }
+    }
+  }
+
+  if (!path.empty()) {
+    // Normalize the path and make absolute.
+    auto abs_path = std::filesystem::absolute(path);
+
+    // Store the host path in loader_data for title-to-title launches
+    // (must be set before LaunchPath so the game sees it immediately)
+    if (xam) {
+      xam->loader_data().host_path = xe::path_to_utf8(abs_path);
+    }
+
+#if XE_PLATFORM_APPLE
+    // macOS: Run through UI thread for Metal backend requirements.
+    result = app_context().CallInUIThread(
+        [this, abs_path]() { return emulator_window_->RunTitle(abs_path); });
+#else
+    // TODO(has207): Add archive format check like in RunTitle?
+    result = emulator_->LaunchPath(abs_path);
+#endif
+    if (XFAILED(result)) {
+      xe::FatalError(fmt::format("Failed to launch target: {:08X}", result));
+      app_context().RequestDeferredQuit();
+      return;
     }
   }
 

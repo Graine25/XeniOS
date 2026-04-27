@@ -1201,10 +1201,17 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
     }
     switch (instr.dimension) {
       case xenos::FetchOpDimension::k1D: {
-        // Handle wide 1D textures (> 8192 wide) mapped to 2D grids.
-        // Check if original_width > kTexture2DCubeMaxWidthHeight (8192).
-        // size_1d_width_minus_1_temp.x contains uint width_minus_1 (saved
-        // before float conversion).
+        // Check if the fetch constant's actual dimension is k1D (word 5, bits
+        // 9-10). If not, skip wide 1D handling as size bits differ per
+        // dimension.
+        a_.OpUBFE(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
+                  dxbc::Src::LU(2), dxbc::Src::LU(9),
+                  RequestTextureFetchConstantWord(tfetch_index, 5));
+        a_.OpIEq(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
+                 dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
+                 dxbc::Src::LU(uint32_t(xenos::DataDimension::k1D)));
+        a_.OpIf(true, dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
+        // Texture is 1D - check if wide (> 8192).
         a_.OpUGE(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
                  dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
                  dxbc::Src::LU(xenos::kTexture2DCubeMaxWidthHeight));
@@ -1256,6 +1263,13 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
         a_.OpElse();
         {
           // Normal 1D texture - pad to 2D array coordinates.
+          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110),
+                   dxbc::Src::LF(0.0f));
+        }
+        a_.OpEndIf();
+        a_.OpElse();
+        {
+          // Non-1D texture bound to 1D fetch - just pad coordinates.
           a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110),
                    dxbc::Src::LF(0.0f));
         }

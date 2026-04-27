@@ -101,13 +101,12 @@ struct VECTOR_CONVERT_F2I
     if (i.instr->flags & ARITHMETIC_UNSIGNED) {
       if (e.IsFeatureEnabled(kX64EmitAVX512Ortho)) {
         Opmask mask = e.k1;
-        // Mask positive values and unordered values
-        // _CMP_NLT_UQ
-        e.vcmpps(mask, i.src1, e.GetXmmConstPtr(XMMZero), 0x15);
+        // Mask non-negative, non-NaN values (ordered, >= 0)
+        // _CMP_GE_OQ
+        e.vcmpps(mask, i.src1, e.GetXmmConstPtr(XMMZero), 0x1D);
 
-        // vcvttps2udq will saturate overflowing positive values and unordered
-        // values to UINT_MAX. Mask registers will write zero everywhere
-        // else (negative values)
+        // vcvttps2udq will saturate overflowing positive values to UINT_MAX.
+        // Zero-masking writes zero for negative values and NaN
         e.vcvttps2udq(i.dest.reg() | mask | e.T_z, i.src1);
         return;
       }
@@ -214,7 +213,9 @@ struct LOAD_VECTOR_SHL_I8
     } else {
       // TODO(benvanik): find a cheaper way of doing this.
       // chrispy: removed mask, ppc_emit_altivec already pre-ands it.
-      e.vmovd(e.xmm0, i.src1.reg().cvt32());
+      e.mov(e.eax, i.src1.reg().cvt32());
+      e.and_(e.eax, 0xF);
+      e.vmovd(e.xmm0, e.eax);
       // broadcast byte
       // dont use broadcastb with avx2, its slower than shuf
       e.vpshufb(e.xmm0, e.xmm0, e.GetXmmConstPtr(XMMZero));
@@ -261,7 +262,9 @@ struct LOAD_VECTOR_SHR_I8
 
       // chrispy: removed mask, ppc_emit_altivec already pre-ands it. removed
       // lookup as well, compute from LVSR base instead
-      e.vmovd(e.xmm0, i.src1.reg().cvt32());
+      e.mov(e.eax, i.src1.reg().cvt32());
+      e.and_(e.eax, 0xF);
+      e.vmovd(e.xmm0, e.eax);
       e.vmovdqa(e.xmm1, e.GetXmmConstPtr(XMMLVSRTableBase));
       // broadcast byte
       // dont use broadcastb with avx2, its slower than shuf
@@ -990,6 +993,10 @@ struct VECTOR_SHL_V128
           e.vpmovzxbd(e.ymm2, e.xmm2);
           e.vpmovzxbd(e.ymm3, e.xmm3);
 
+          e.vpbroadcastd(e.ymm4, e.GetXmmConstPtr(XMMXOPByteShiftMask));
+          e.vpand(e.ymm2, e.ymm2, e.ymm4);
+          e.vpand(e.ymm3, e.ymm3, e.ymm4);
+
           e.vpsllvd(e.ymm0, e.ymm0, e.ymm2);
           e.vpsllvd(e.ymm1, e.ymm1, e.ymm3);
           e.vextracti128(e.xmm2, e.ymm0, 1);
@@ -1031,7 +1038,7 @@ struct VECTOR_SHL_V128
     e.L(looper);
     e.movzx(e.ecx, e.byte[e.rsp + stack_offset_src2 + e.rdx]);
     e.and_(e.cl, 7);  // Mask shift count to 3 bits (0-7) for byte shifts
-
+    e.and_(e.cl, 7);  // Mask shift count to 3 bits (0-7) for byte shifts
     e.shl(e.byte[e.rsp + stack_offset_src1 + e.rdx], e.cl);
 
     if (e.IsFeatureEnabled(kX64FlagsIndependentVars)) {
@@ -1056,7 +1063,7 @@ struct VECTOR_SHL_V128
     if (i.src2.is_constant) {
       const auto& shamt = i.src2.constant();
       bool all_same = true;
-      for (size_t n = 0; n < 8 - n; ++n) {
+      for (size_t n = 0; n < 7; ++n) {
         if (shamt.u16[n] != shamt.u16[n + 1]) {
           all_same = false;
           break;
@@ -1134,7 +1141,7 @@ struct VECTOR_SHL_V128
     if (i.src2.is_constant) {
       const auto& shamt = i.src2.constant();
       bool all_same = true;
-      for (size_t n = 0; n < 4 - n; ++n) {
+      for (size_t n = 0; n < 3; ++n) {
         if (shamt.u32[n] != shamt.u32[n + 1]) {
           all_same = false;
           break;
@@ -1334,7 +1341,7 @@ struct VECTOR_SHR_V128
     if (i.src2.is_constant) {
       const auto& shamt = i.src2.constant();
       bool all_same = true;
-      for (size_t n = 0; n < 8 - n; ++n) {
+      for (size_t n = 0; n < 7; ++n) {
         if (shamt.u16[n] != shamt.u16[n + 1]) {
           all_same = false;
           break;
@@ -1417,7 +1424,7 @@ struct VECTOR_SHR_V128
     if (i.src2.is_constant) {
       const auto& shamt = i.src2.constant();
       bool all_same = true;
-      for (size_t n = 0; n < 4 - n; ++n) {
+      for (size_t n = 0; n < 3; ++n) {
         if (shamt.u32[n] != shamt.u32[n + 1]) {
           all_same = false;
           break;
@@ -1635,7 +1642,7 @@ struct VECTOR_SHA_V128
     if (i.src2.is_constant) {
       const auto& shamt = i.src2.constant();
       bool all_same = true;
-      for (size_t n = 0; n < 8 - n; ++n) {
+      for (size_t n = 0; n < 7; ++n) {
         if (shamt.u16[n] != shamt.u16[n + 1]) {
           all_same = false;
           break;
@@ -1710,7 +1717,7 @@ struct VECTOR_SHA_V128
     if (i.src2.is_constant) {
       const auto& shamt = i.src2.constant();
       bool all_same = true;
-      for (size_t n = 0; n < 4 - n; ++n) {
+      for (size_t n = 0; n < 3; ++n) {
         if (shamt.u32[n] != shamt.u32[n + 1]) {
           all_same = false;
           break;
@@ -2599,7 +2606,16 @@ static void emit_fast_f16_unpack(X64Emitter& e, const Inst& i,
 template <typename Inst>
 static void emit_fast_f16_pack(X64Emitter& e, const Inst& i,
                                XmmConst final_shuffle) {
+  // XMMF16PackLCPI0 includes bias (0x08000000) + round-half-down (0xFFF).
+  // For round-to-nearest-even, also add the tie-breaker: bit 13 of src.
+  // Bit 13 of (src + bias) == bit 13 of src since the bias doesn't affect
+  // bits 0-26.
   e.vpaddd(e.xmm1, i.src1, e.GetXmmConstPtr(XMMF16PackLCPI0));
+  e.vpsrld(e.xmm0, i.src1, 13);
+  e.vpslld(e.xmm0, e.xmm0, 31);
+  e.vpsrld(e.xmm0, e.xmm0, 31);
+  e.vpaddd(e.xmm1, e.xmm1, e.xmm0);
+
   e.vpand(e.xmm2, i.src1, e.GetXmmConstPtr(XMMAbsMaskPS));
   e.vmovdqa(e.xmm3, e.GetXmmConstPtr(XMMF16PackLCPI2));
 
@@ -2772,9 +2788,6 @@ struct PACK : Sequence<PACK, I<OPCODE_PACK, V128Op, V128Op, V128Op>> {
   static void EmitFLOAT16_4(X64Emitter& e, const EmitArgType& i) {
     if (!i.src1.is_constant) {
 #if XE_ARCH_AMD64
-      // TODO(has207): this code has an off-by-1 in rounding
-      // compared to the fallback which is accurate, but
-      // keeping it as default. Should be fixed.
       emit_fast_f16_pack(e, i, XMMPackFLOAT16_4);
 #else
       auto src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
@@ -2805,9 +2818,14 @@ struct PACK : Sequence<PACK, I<OPCODE_PACK, V128Op, V128Op, V128Op>> {
     } else {
       src = i.src1;
     }
+    // Preserve exact zeros before saturating (mantissa trick doesn't).
+    e.vpxor(e.xmm2, e.xmm2, e.xmm2);
+    e.vpcmpeqd(e.xmm1, src, e.xmm2);
     // Saturate.
     e.vmaxps(i.dest, src, e.GetXmmConstPtr(XMMPackSHORT_Min));
     e.vminps(i.dest, i.dest, e.GetXmmConstPtr(XMMPackSHORT_Max));
+    // Clear elements that were originally zero.
+    e.vpandn(i.dest, e.xmm1, i.dest);
     // Pack.
     e.vpshufb(i.dest, i.dest, e.GetXmmConstPtr(XMMPackSHORT_2));
   }
@@ -2820,9 +2838,14 @@ struct PACK : Sequence<PACK, I<OPCODE_PACK, V128Op, V128Op, V128Op>> {
     } else {
       src = i.src1;
     }
+    // Preserve exact zeros before saturating (mantissa trick doesn't).
+    e.vpxor(e.xmm2, e.xmm2, e.xmm2);
+    e.vpcmpeqd(e.xmm1, src, e.xmm2);
     // Saturate.
     e.vmaxps(i.dest, src, e.GetXmmConstPtr(XMMPackSHORT_Min));
     e.vminps(i.dest, i.dest, e.GetXmmConstPtr(XMMPackSHORT_Max));
+    // Clear elements that were originally zero.
+    e.vpandn(i.dest, e.xmm1, i.dest);
     // Pack.
     e.vpshufb(i.dest, i.dest, e.GetXmmConstPtr(XMMPackSHORT_4));
   }

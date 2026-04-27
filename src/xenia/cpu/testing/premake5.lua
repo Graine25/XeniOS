@@ -10,7 +10,7 @@ test_suite("xenia-cpu-tests", project_root, ".", {
     "xenia-base",
     "xenia-core",
     "xenia-cpu",
-    "xenia-gpu",
+    "xenia-gpu",  -- Required by xenia-kernel (video syscalls)
     "xenia-hid-skylander",
 
     -- TODO(benvanik): cut these dependencies?
@@ -24,9 +24,29 @@ test_suite("xenia-cpu-tests", project_root, ".", {
       links = {
         "xenia-cpu-backend-x64",
       },
-    }
+    },
+    {
+      filter = 'architecture:ARM64',
+      links = {
+        "xenia-cpu-backend-a64",
+      },
+    },
   },
 })
 
 -- xenia-kernel links to xenia-apu, which needs SDL on Linux
 apu_transitive_deps()
+
+-- macOS requires additional frameworks for Metal/UI
+filter("system:macosx")
+  links({
+    "QuartzCore.framework",
+    "Metal.framework",
+    "Foundation.framework",
+    "AppKit.framework",
+  })
+filter({"system:macosx", "architecture:x86_64"})
+  linkoptions({
+    "-Wl,-pagezero_size,0x1000",
+  })
+filter({})

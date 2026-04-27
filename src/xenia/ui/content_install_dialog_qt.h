@@ -18,6 +18,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <memory>
+#include <variant>
 #include <vector>
 
 #include "xenia/emulator.h"
@@ -32,6 +33,11 @@ class ContentInstallDialogQt : public QDialog {
   ContentInstallDialogQt(
       QWidget* parent, const std::filesystem::path& content_root,
       std::shared_ptr<std::vector<Emulator::ContentInstallEntry>> entries);
+
+  ContentInstallDialogQt(
+      QWidget* parent,
+      std::shared_ptr<std::vector<Emulator::ZarchiveEntry>> entries);
+
   ~ContentInstallDialogQt() override;
 
  private slots:
@@ -42,10 +48,13 @@ class ContentInstallDialogQt : public QDialog {
  private:
   void SetupUI();
   bool IsEverythingInstalled();
+  size_t GetEntryCount() const;
 
   std::filesystem::path content_root_;
   std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
       installation_entries_;
+  std::shared_ptr<std::vector<Emulator::ZarchiveEntry>> zarchive_entries_;
+  bool is_zarchive_mode_ = false;
 
   QTableWidget* table_widget_;
   QPushButton* close_button_;

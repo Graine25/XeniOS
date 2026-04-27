@@ -69,6 +69,8 @@ class GraphicsSystem {
   kernel::KernelState* kernel_state() const { return kernel_state_; }
   ui::GraphicsProvider* provider() const { return provider_.get(); }
   ui::Presenter* presenter() const { return presenter_.get(); }
+  // Create a presenter on demand for trace dump capture.
+  bool EnsurePresenterForCapture();
 
   virtual X_STATUS Setup(cpu::Processor* processor,
                          kernel::KernelState* kernel_state,
@@ -141,8 +143,8 @@ class GraphicsSystem {
   ui::WindowedAppContext* app_context_ = nullptr;
   std::unique_ptr<ui::GraphicsProvider> provider_;
 
-  uint32_t interrupt_callback_ = 0;
-  uint32_t interrupt_callback_data_ = 0;
+  std::atomic<uint32_t> interrupt_callback_{0};
+  std::atomic<uint32_t> interrupt_callback_data_{0};
 
   std::atomic<bool> frame_limiter_worker_running_;
   kernel::object_ref<kernel::XHostThread> frame_limiter_worker_thread_;

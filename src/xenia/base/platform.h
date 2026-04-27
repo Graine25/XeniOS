@@ -27,8 +27,19 @@
 #include <TargetConditionals.h>
 #endif
 
-#if defined(TARGET_OS_MAC) && TARGET_OS_MAC
+// Apple platform hierarchy:
+//   XE_PLATFORM_APPLE  - all Apple platforms (macOS, iOS, etc.)
+//   XE_PLATFORM_MAC    - macOS only
+//   XE_PLATFORM_IOS    - iOS/iPadOS only
+// Note: TARGET_OS_MAC is 1 on ALL Apple platforms (including iOS), so we must
+// check TARGET_OS_IOS / TARGET_OS_IPHONE first and explicitly exclude them.
+#if defined(__APPLE__)
+#define XE_PLATFORM_APPLE 1
+#if TARGET_OS_IOS || TARGET_OS_IPHONE
+#define XE_PLATFORM_IOS 1
+#elif TARGET_OS_MAC && !TARGET_OS_IOS && !TARGET_OS_IPHONE
 #define XE_PLATFORM_MAC 1
+#endif
 #elif defined(WIN32) || defined(_WIN32)
 #define XE_PLATFORM_WIN32 1
 #elif defined(__ANDROID__)
@@ -81,9 +92,13 @@
 #endif
 
 #if XE_PLATFORM_WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX  // Don't want windows.h including min/max macros.
-#endif            // XE_PLATFORM_WIN32
+#endif
+#endif  // XE_PLATFORM_WIN32
 
 #if XE_PLATFORM_WIN32
 #include <intrin.h>
@@ -91,9 +106,9 @@
 #include <x86intrin.h>
 #endif  // XE_PLATFORM_WIN32
 
-#if XE_PLATFORM_MAC
+#if XE_PLATFORM_APPLE
 #include <libkern/OSByteOrder.h>
-#endif  // XE_PLATFORM_MAC
+#endif  // XE_PLATFORM_APPLE
 
 #if XE_COMPILER_MSVC
 #define _XEPACKEDSCOPE(body) __pragma(pack(push, 1)) body __pragma(pack(pop));

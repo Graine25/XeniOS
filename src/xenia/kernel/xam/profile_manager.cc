@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xam/profile_manager.h"
 
+#include <map>
+
 #include "xenia/base/logging.h"
 #include "xenia/config.h"
 #include "xenia/emulator.h"
@@ -727,6 +729,174 @@ bool ProfileManager::ClearTitlePath(uint32_t title_id) {
   }
 
   return modified_any;
+}
+
+bool ProfileManager::RemoveTitleFromAllProfiles(uint32_t title_id) {
+  if (title_id == 0) {
+    return false;
+  }
+
+  auto content_root = kernel_state_->emulator()->content_root();
+  auto profiles_directory = xe::filesystem::FilterByName(
+      xe::filesystem::ListDirectories(content_root),
+      std::regex("[0-9A-F]{16}"));
+
+  bool removed_from_any = false;
+
+  for (const auto& profile_dir : profiles_directory) {
+    const std::string profile_xuid = xe::path_to_utf8(profile_dir.name);
+    if (profile_xuid == fmt::format("{:016X}", 0)) {
+      continue;  // Skip shared content directory
+    }
+
+    std::filesystem::path dashboard_gpd_path =
+        profile_dir.path / profile_dir.name / kDashboardStringID /
+        fmt::format("{:08X}", static_cast<uint32_t>(XContentType::kProfile)) /
+        profile_dir.name / fmt::format("{:08X}.gpd", kDashboardID);
+
+    if (!std::filesystem::exists(dashboard_gpd_path)) {
+      continue;
+    }
+
+    std::ifstream file(dashboard_gpd_path, std::ios::binary);
+    if (!file.is_open()) {
+      continue;
+    }
+
+    file.seekg(0, std::ios::end);
+    size_t file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    std::vector<uint8_t> gpd_data(file_size);
+    file.read(reinterpret_cast<char*>(gpd_data.data()), file_size);
+    file.close();
+
+    GpdInfoProfile dashboard_gpd(gpd_data);
+    if (!dashboard_gpd.IsValid()) {
+      continue;
+    }
+
+    if (dashboard_gpd.RemoveTitle(title_id)) {
+      std::vector<uint8_t> serialized_gpd = dashboard_gpd.Serialize();
+
+      std::ofstream out_file(dashboard_gpd_path, std::ios::binary);
+      if (out_file.is_open()) {
+        out_file.write(reinterpret_cast<const char*>(serialized_gpd.data()),
+                       serialized_gpd.size());
+        out_file.close();
+        removed_from_any = true;
+      }
+    }
+  }
+
+  return removed_from_any;
+}
+
+std::vector<ScannedTitleInfo> ProfileManager::ScanAllProfilesForTitles() const {
+  std::map<uint32_t, ScannedTitleInfo> titles_by_id;
+
+  auto content_root = kernel_state_->emulator()->content_root();
+  auto profiles_directory = xe::filesystem::FilterByName(
+      xe::filesystem::ListDirectories(content_root),
+      std::regex("[0-9A-F]{16}"));
+
+  for (const auto& profile_dir : profiles_directory) {
+    const std::string profile_xuid = xe::path_to_utf8(profile_dir.name);
+    if (profile_xuid == fmt::format("{:016X}", 0)) {
+      continue;  // Skip shared content directory
+    }
+
+    std::filesystem::path dashboard_gpd_path =
+        profile_dir.path / profile_dir.name / kDashboardStringID /
+        fmt::format("{:08X}", static_cast<uint32_t>(XContentType::kProfile)) /
+        profile_dir.name / fmt::format("{:08X}.gpd", kDashboardID);
+
+    if (!std::filesystem::exists(dashboard_gpd_path)) {
+      continue;
+    }
+
+    std::ifstream file(dashboard_gpd_path, std::ios::binary);
+    if (!file.is_open()) {
+      continue;
+    }
+
+    file.seekg(0, std::ios::end);
+    size_t file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    std::vector<uint8_t> gpd_data(file_size);
+    file.read(reinterpret_cast<char*>(gpd_data.data()), file_size);
+    file.close();
+
+    GpdInfoProfile dashboard_gpd(gpd_data);
+    if (!dashboard_gpd.IsValid()) {
+      continue;
+    }
+
+    auto titles_info = dashboard_gpd.GetTitlesInfo();
+    for (const auto& title_info : titles_info) {
+      uint32_t title_id = title_info->title_id;
+
+      time_t last_played = 0;
+      if (title_info->last_played.is_valid()) {
+        auto last_played_tp = chrono::WinSystemClock::to_sys(
+            title_info->last_played.to_time_point());
+        last_played = std::chrono::system_clock::to_time_t(last_played_tp);
+      }
+
+      if (titles_by_id.find(title_id) != titles_by_id.end()) {
+        // Keep most recent timestamp across profiles
+        if (last_played > titles_by_id[title_id].last_run_time) {
+          titles_by_id[title_id].last_run_time = last_played;
+        }
+        continue;
+      }
+
+      std::string title_name =
+          xe::to_utf8(dashboard_gpd.GetTitleName(title_id));
+      if (!title_name.empty() && title_name.back() == '\0') {
+        title_name.pop_back();
+      }
+
+      std::filesystem::path path_to_file;
+      auto gpd_path = dashboard_gpd.GetTitlePath(title_id);
+      if (gpd_path.has_value()) {
+        path_to_file = *gpd_path;
+      }
+
+      auto all_discs = dashboard_gpd.GetTitleDiscs(title_id);
+      if (all_discs.size() > 1) {
+        std::sort(all_discs.begin(), all_discs.end(),
+                  [](const GpdInfoProfile::DiscInfo& a,
+                     const GpdInfoProfile::DiscInfo& b) {
+                    return a.label < b.label;
+                  });
+      }
+
+      titles_by_id[title_id] = {title_id, title_name, path_to_file, all_discs,
+                                last_played};
+    }
+  }
+
+  std::vector<ScannedTitleInfo> result;
+  for (auto& [title_id, title] : titles_by_id) {
+    result.push_back(std::move(title));
+  }
+
+  std::sort(result.begin(), result.end(),
+            [](const ScannedTitleInfo& a, const ScannedTitleInfo& b) {
+              return a.last_run_time > b.last_run_time;
+            });
+
+  return result;
+}
+
+std::filesystem::path ProfileManager::GetMostRecentlyPlayedTitlePath() const {
+  auto titles = ScanAllProfilesForTitles();
+  if (!titles.empty() && !titles[0].path_to_file.empty()) {
+    return titles[0].path_to_file;
+  }
+  return {};
 }
 
 bool ProfileManager::IsGamertagValid(const std::string gamertag) {

@@ -791,19 +791,13 @@ bool PipelineCache::ConfigurePipeline(
     }
   }
 
-  // If shaders are already translated, create PSO synchronously (fast path).
-  bool shaders_already_translated =
-      vertex_shader->is_translated() &&
-      (pixel_shader == nullptr || pixel_shader->is_translated());
-  bool effective_async = use_async && !shaders_already_translated;
-
   PipelineRuntimeDescription runtime_description;
   if (!GetCurrentStateDescription(
           vertex_shader, pixel_shader, primitive_processing_result,
           normalized_depth_control, normalized_color_mask,
           bound_depth_and_color_render_target_bits,
           bound_depth_and_color_render_target_formats, runtime_description,
-          effective_async)) {
+          use_async)) {
     return false;
   }
   PipelineDescription& description = runtime_description.description;
@@ -834,7 +828,7 @@ bool PipelineCache::ConfigurePipeline(
   pipelines_.emplace(hash, new_pipeline);
   COUNT_profile_set("gpu/pipeline_cache/pipelines", pipelines_.size());
 
-  if (effective_async) {
+  if (use_async) {
     // Queue for background thread.
     new_pipeline->pending_vertex_shader = vertex_shader;
     new_pipeline->pending_pixel_shader = pixel_shader;

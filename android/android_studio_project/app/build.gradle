@@ -7,7 +7,7 @@ android {
     ndkVersion '25.0.8775105'
 
     defaultConfig {
-        applicationId 'jp.xenia.emulator'
+        applicationId 'jp.xenios.emulator'
         // 24 (7.0) - Vulkan.
         minSdkVersion 24
         targetSdkVersion 33
